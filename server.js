@@ -1,0 +1,136 @@
+// Add polyfills for Google Generative AI
+const fetch = require('node-fetch');
+const { Headers } = require('node-fetch');
+global.fetch = fetch;
+global.Headers = Headers;
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  // Optionally, you can decide to exit the process or keep it alive
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Optionally, you can decide to exit the process or keep it alive
+});
+
+const express = require('express');
+const cors = require('cors');
+const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
+
+const path = require('path');
+require('dotenv').config();
+
+// Import database connection
+const connectDB = require('./config/database');
+
+// Import routes
+const authRoutes = require('./routes/authRoutes');
+const searchRoutes = require('./routes/searchRoutes');
+const stripeRoutes = require('./routes/stripeRoutes');
+const linkedinRoutes = require('./routes/linkedinRoutes');
+const profileRoutes = require('./routes/profileRoutes');
+const proxyRoutes = require('./routes/proxyRoutes');
+const callbackRoutes = require('./routes/callbackRoutes');
+const creditRoutes = require('./routes/creditRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const savedProfileRoutes = require('./routes/savedProfileRoutes');
+const projectsRoutes = require('./routes/projectsRoutes');
+const profilesRoutes = require('./routes/profilesRoutes');
+const searchHistoryRoutes = require('./routes/searchHistoryRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
+
+// Import middleware
+const notFoundMiddleware = require('./middleware/not-found');
+const errorHandlerMiddleware = require('./middleware/error-handler');
+const debugLogger = require('./middleware/debugLogger');
+
+
+const app = express();
+const PORT = process.env.PORT || 7230;
+
+// Connect to MongoDB
+connectDB();
+
+// Middleware
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://devsacoreweb.56-north.com', 'https://devsacoreweb.56-north.com/', 'http://localhost:8080', 'http://192.168.29.100:8080', 'http://172.29.96.1:8080', 'http://localhost:5173', 'http://localhost:3001', 'http://localhost:3002', 'http://localhost:3003'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
+
+// Special handling for Stripe webhooks
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+
+// Regular middleware for other routes
+app.use(express.json({ limit: '10mb' })); // Increased from 1mb to 10mb
+app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Added limit for urlencoded as well
+app.use(morgan('dev'));
+app.use(cookieParser());
+
+
+// Add debug middleware in development
+if (process.env.NODE_ENV !== 'production') {
+  app.use(debugLogger);
+}
+
+// Health check route for hosting platforms
+app.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok', message: 'Server is healthy' });
+});
+
+// Routes
+app.use('/api/admin', adminRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/stripe', stripeRoutes);
+app.use('/api/linkedin', linkedinRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/proxy', proxyRoutes);
+app.use('/api/callback', callbackRoutes);
+app.use('/api/credits', creditRoutes);
+app.use('/api/saved-profiles', savedProfileRoutes);
+app.use('/api/projects', projectsRoutes);
+app.use('/api/profiles', profilesRoutes);
+app.use('/api/search-history', searchHistoryRoutes);
+app.use('/api', dashboardRoutes);
+
+// Register a new SignalHire API request
+app.post('/api/signalhire-request', async (req, res) => {
+  const profileService = require('./services/profileService');
+
+  try {
+    const { requestId, url } = req.body;
+
+    if (!requestId || !url) {
+      return res.status(400).json({ error: 'Missing required fields: requestId and url' });
+    }
+
+    // Store the request
+    await profileService.saveRequest({
+      requestId,
+      url,
+      createdAt: new Date().toISOString(),
+      status: 'pending'
+    });
+
+    return res.status(200).json({ success: true, message: 'Request registered successfully' });
+  } catch (error) {
+    console.error('Error registering SignalHire request:', error);
+    return res.status(500).json({ error: 'Internal server error registering request' });
+  }
+});
+// Serve static files from the 'public' directory
+// app.use(express.static(path.join(__dirname, 'public')));
+
+// Error handling
+app.use(notFoundMiddleware);
+app.use(errorHandlerMiddleware);
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+module.exports = app; // For testing
