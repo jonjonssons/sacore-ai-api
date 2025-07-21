@@ -55,7 +55,7 @@ connectDB();
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://devsacoreweb.56-north.com', 'https://devsacoreweb.56-north.com/', 'http://localhost:8080', 'http://192.168.29.100:8080', 'http://172.29.96.1:8080', 'http://localhost:5173', 'https://sacore-ai-web-ickr.onrender.com/', 'https://sacore-ai-web-ickr.onrender.com'],
+  origin: ['http://localhost:3000', 'https://devsacoreweb.56-north.com', 'https://devsacoreweb.56-north.com/', 'http://localhost:8080', 'http://192.168.29.100:8080', 'https://sacore.ai/', 'https://sacore.ai', 'http://localhost:5173', 'https://sacore-ai-web-ickr.onrender.com/', 'https://sacore-ai-web-ickr.onrender.com'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
