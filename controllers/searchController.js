@@ -408,8 +408,41 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
     const totalTieredSearches = queries.length * 6;
     // Check subscription limits before processing
-    const limitCheck = await usageService.checkSearchLimits(req.user.userId);
-    console.log('Search limits check:', limitCheck);
+    // const limitCheck = await usageService.checkSearchLimits(req.user.userId);
+    // console.log('Search limits check:', limitCheck);
+
+    // Check subscription limits before processing (skip for special user)
+    const specialUserIds = [
+      '687f290cdbaa807b7a3940b9',
+      '687f386adbaa807b7a39416d',
+      '687f93926c2df025fa30a761'
+    ];
+
+    if (!specialUserIds.includes(req.user.userId)) {
+      const limitCheck = await usageService.checkSearchLimits(req.user.userId);
+      console.log('Search limits check:', limitCheck);
+    } else {
+      console.log('Skipping search limits check for special user:', req.user.userId);
+    }
+
+
+    // Record the search usage (skip for special user)
+    // if (req.user.userId !== specialUserId) {
+    //   await usageService.recordSearch(req.user.userId);
+    if (!specialUserIds.includes(req.user.userId)) {
+      await usageService.recordSearch(req.user.userId);
+      // Base charge: 5 credits for Google CSE search
+      // let totalCredits = 20;
+
+      // // Additional 3 credits if SignalHire is included
+      // // if (includeSignalHire) {
+      // //   totalCredits += 3;
+      // // }
+
+      // await creditService.consumeCredits(req.user.userId, 'SEARCH', totalCredits);
+    } else {
+      console.log('Skipping usage recording and credit consumption for special user:', req.user.userId);
+    }
 
     // Search usage will be recorded after successful results are obtained
 
