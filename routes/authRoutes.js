@@ -7,6 +7,8 @@ router.post('/register', authController.register);
 router.post('/verify-email', authController.verifyEmail);
 router.post('/resend-verification', authController.resendVerificationCode);
 router.post('/login', authController.login);
+router.get('/onboarding-status', authenticateUser, authController.getOnboardingStatus);
+router.post('/onboarding-status', authenticateUser, authController.updateOnboardingStatus);
 router.post('/refresh-token', authController.refreshToken);
 router.get('/me', authenticateUser, authController.getCurrentUser);
 router.get('/trial-status', authenticateUser, authController.getTrialStatus);

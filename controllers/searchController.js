@@ -584,112 +584,167 @@ exports.searchLinkedInProfiles = async (req, res) => {
     }
 
     // Convert industry to the most relevant predefined industry if provided (needed for SignalHire and IcyPeas)
-    let convertedIndustry = undefined;
+    let convertedIndustries = { primary: undefined, secondary: undefined };
     if ((includeSignalHire || includeIcypeas) && industries.length > 0) {
-      convertedIndustry = await openaiService.convertToRelevantIndustry(industries[0]);
-      console.log(`Industry conversion: ${industries[0]} → ${convertedIndustry}`);
+      convertedIndustries = await openaiService.convertToRelevantIndustry(industries[0]);
+      console.log(`Industry conversion: ${industries[0]} → Primary: ${convertedIndustries.primary}, Secondary: ${convertedIndustries.secondary}`);
     }
 
     // SignalHire Search (if enabled)
     if (includeSignalHire && roles.length > 0) {
       try {
 
-        const signalHireSearchCriteria = {
+        // --- Primary Search ---
+        const primarySearchCriteria = {
           title: roles[0], // Use first role
           location: location,
-          industry: convertedIndustry,
+          industry: convertedIndustries.primary,
           size: 100 // Maximum SignalHire results per page
         };
 
-        console.log('SignalHire search criteria:', signalHireSearchCriteria);
+        console.log('SignalHire primary search criteria:', primarySearchCriteria);
+        const primarySignalHireResponse = await signalHireService.searchProfilesByCriteria(primarySearchCriteria);
+        let allSignalHireProfiles = [];
 
-        const signalHireResponse = await signalHireService.searchProfilesByCriteria(signalHireSearchCriteria);
+        if (primarySignalHireResponse.success && primarySignalHireResponse.results && primarySignalHireResponse.results.profiles) {
+          allSignalHireProfiles = [...primarySignalHireResponse.results.profiles];
 
-        if (signalHireResponse.success && signalHireResponse.results && signalHireResponse.results.profiles) {
-          let allSignalHireProfiles = [...signalHireResponse.results.profiles];
-
-          // Get additional pages using scroll search if scrollId is available
-          if (signalHireResponse.results.scrollId && signalHireResponse.results.requestId && allSignalHireProfiles.length < 500) {
-            let currentScrollId = signalHireResponse.results.scrollId;
-            const requestId = signalHireResponse.results.requestId;
+          // Pagination for primary search
+          if (primarySignalHireResponse.results.scrollId && primarySignalHireResponse.results.requestId && allSignalHireProfiles.length < 500) {
+            let currentScrollId = primarySignalHireResponse.results.scrollId;
+            const requestId = primarySignalHireResponse.results.requestId;
             let page = 1;
 
-            // Continue until no more pages
             while (currentScrollId && allSignalHireProfiles.length < 500) {
               try {
-                console.log(`Fetching SignalHire page ${page + 1} with scrollId:`, currentScrollId);
-
+                console.log(`Fetching SignalHire primary page ${page + 1} with scrollId:`, currentScrollId);
                 const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
 
                 if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
-                  // Add profiles but respect the 500 limit
                   const remainingSlots = 500 - allSignalHireProfiles.length;
                   const profilesToAdd = scrollResponse.results.profiles.slice(0, remainingSlots);
-
                   allSignalHireProfiles = allSignalHireProfiles.concat(profilesToAdd);
-                  console.log(`Added ${profilesToAdd.length} profiles from page ${page + 1}. Total: ${allSignalHireProfiles.length}`);
-
-                  // If we reached 500 profiles, stop searching
+                  console.log(`Added ${profilesToAdd.length} profiles from primary page ${page + 1}. Total: ${allSignalHireProfiles.length}`);
                   if (allSignalHireProfiles.length >= 500) {
                     console.log('Reached 500 SignalHire profiles limit, stopping pagination');
                     break;
                   }
-
-                  // Update scrollId for next page
                   if (scrollResponse.results.scrollId) {
                     currentScrollId = scrollResponse.results.scrollId;
                   } else {
-                    // No more pages available
-                    console.log('No more scrollId available, reached last page');
+                    console.log('No more scrollId available, reached last page for primary search');
                     break;
                   }
                 } else {
-                  // No more results or error
-                  console.log('No more profiles available or empty response');
+                  console.log('No more primary profiles available or empty response');
                   break;
                 }
-
                 page++;
               } catch (scrollError) {
-                console.error(`SignalHire scroll search page ${page + 1} failed:`, scrollError);
-                break; // Stop pagination on error
+                console.error(`SignalHire primary scroll search page ${page + 1} failed:`, scrollError);
+                break;
               }
             }
           }
-          // Ensure we don't exceed 500 profiles (safety check)
-          if (allSignalHireProfiles.length > 500) {
-            allSignalHireProfiles = allSignalHireProfiles.slice(0, 500);
-            console.log('Trimmed SignalHire profiles to 500 limit');
-          }
-          console.log(`Final SignalHire profiles count: ${allSignalHireProfiles.length}`);
-
-
-          // Convert all SignalHire profiles to our standard format
-          signalHireResults = allSignalHireProfiles.map(profile => ({
-            // Convert SignalHire format to our standard format
-            title: `${profile.fullName || 'Unknown'} - ${profile.experience?.[0]?.title || 'Professional'} - ${profile.experience?.[0]?.company || 'Company'}`,
-            link: '',
-            snippet: `${profile.fullName || 'Unknown'} • ${profile.location} • ${profile.experience?.[0]?.title || ''} at ${profile.experience?.[0]?.company || ''}`,
-            pagemap: {
-              metatags: [{
-                'profile:first_name': profile.fullName ? profile.fullName.split(' ')[0] || '' : '',
-                'profile:last_name': profile.fullName ? profile.fullName.split(' ').slice(1).join(' ') || '' : '',
-                'og:description': `${profile.fullName || 'Unknown'} • ${profile.location} • ${profile.experience?.[0]?.title || ''}`
-              }]
-            },
-            // Add SignalHire specific data
-            signalHireData: {
-              uid: profile.uid,
-              fullName: profile.fullName,
-              location: profile.location,
-              experience: profile.experience || [],
-              skills: profile.skills || [],
-              contactsFetched: profile.contactsFetched
-            },
-            relevanceScore: 100,
-            source: 'signalhire'
-          }));
         }
+
+        // --- Fallback to Secondary Search ---
+        if (allSignalHireProfiles.length < 400 && convertedIndustries.secondary) {
+          console.log(`Primary SignalHire search returned ${allSignalHireProfiles.length} profiles. Trying secondary industry: "${convertedIndustries.secondary}"`);
+
+          const secondarySearchCriteria = {
+            title: roles[0],
+            location: location,
+            industry: convertedIndustries.secondary,
+            size: 100
+          };
+
+          console.log('SignalHire secondary search criteria:', secondarySearchCriteria);
+          const secondarySignalHireResponse = await signalHireService.searchProfilesByCriteria(secondarySearchCriteria);
+          let secondaryProfiles = [];
+
+          if (secondarySignalHireResponse.success && secondarySignalHireResponse.results && secondarySignalHireResponse.results.profiles) {
+            secondaryProfiles = [...secondarySignalHireResponse.results.profiles];
+
+            // Pagination for secondary search
+            if (secondarySignalHireResponse.results.scrollId && secondarySignalHireResponse.results.requestId && (allSignalHireProfiles.length + secondaryProfiles.length) < 500) {
+              let currentScrollId = secondarySignalHireResponse.results.scrollId;
+              const requestId = secondarySignalHireResponse.results.requestId;
+              let page = 1;
+
+              while (currentScrollId && (allSignalHireProfiles.length + secondaryProfiles.length) < 500) {
+                try {
+                  console.log(`Fetching SignalHire secondary page ${page + 1} with scrollId:`, currentScrollId);
+                  const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
+                  if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
+                    const remainingSlots = 500 - (allSignalHireProfiles.length + secondaryProfiles.length);
+                    const profilesToAdd = scrollResponse.results.profiles.slice(0, remainingSlots);
+                    secondaryProfiles = secondaryProfiles.concat(profilesToAdd);
+                    console.log(`Added ${profilesToAdd.length} profiles from secondary page ${page + 1}. Total secondary: ${secondaryProfiles.length}`);
+                    if ((allSignalHireProfiles.length + secondaryProfiles.length) >= 500) {
+                      console.log('Reached 500 total SignalHire profiles limit, stopping pagination');
+                      break;
+                    }
+                    if (scrollResponse.results.scrollId) {
+                      currentScrollId = scrollResponse.results.scrollId;
+                    } else {
+                      console.log('No more scrollId available, reached last page for secondary search');
+                      break;
+                    }
+                  } else {
+                    console.log('No more secondary profiles available or empty response');
+                    break;
+                  }
+                  page++;
+                } catch (scrollError) {
+                  console.error(`SignalHire secondary scroll search page ${page + 1} failed:`, scrollError);
+                  break;
+                }
+              }
+            }
+          }
+
+          // Combine and deduplicate
+          if (secondaryProfiles.length > 0) {
+            const existingUids = new Set(allSignalHireProfiles.map(p => p.uid));
+            const uniqueSecondaryProfiles = secondaryProfiles.filter(p => p.uid && !existingUids.has(p.uid));
+            allSignalHireProfiles.push(...uniqueSecondaryProfiles);
+            console.log(`Added ${uniqueSecondaryProfiles.length} unique profiles from secondary search. New total: ${allSignalHireProfiles.length}`);
+          }
+        }
+        // Ensure we don't exceed 500 profiles (safety check)
+        if (allSignalHireProfiles.length > 500) {
+          allSignalHireProfiles = allSignalHireProfiles.slice(0, 500);
+          console.log('Trimmed SignalHire profiles to 500 limit');
+        }
+        console.log(`Final SignalHire profiles count: ${allSignalHireProfiles.length}`);
+
+
+        // Convert all SignalHire profiles to our standard format
+        signalHireResults = allSignalHireProfiles.map(profile => ({
+          // Convert SignalHire format to our standard format
+          title: `${profile.fullName || 'Unknown'} - ${profile.experience?.[0]?.title || 'Professional'} - ${profile.experience?.[0]?.company || 'Company'}`,
+          link: '',
+          snippet: `${profile.fullName || 'Unknown'} • ${profile.location} • ${profile.experience?.[0]?.title || ''} at ${profile.experience?.[0]?.company || ''}`,
+          pagemap: {
+            metatags: [{
+              'profile:first_name': profile.fullName ? profile.fullName.split(' ')[0] || '' : '',
+              'profile:last_name': profile.fullName ? profile.fullName.split(' ').slice(1).join(' ') || '' : '',
+              'og:description': `${profile.fullName || 'Unknown'} • ${profile.location} • ${profile.experience?.[0]?.title || ''}`
+            }]
+          },
+          // Add SignalHire specific data
+          signalHireData: {
+            uid: profile.uid,
+            fullName: profile.fullName,
+            location: profile.location,
+            experience: profile.experience || [],
+            skills: profile.skills || [],
+            contactsFetched: profile.contactsFetched
+          },
+          relevanceScore: 100,
+          source: 'signalhire'
+        }));
       } catch (signalHireError) {
         console.error('SignalHire search failed:', signalHireError);
         // Continue with Google results even if SignalHire fails
@@ -773,73 +828,87 @@ exports.searchLinkedInProfiles = async (req, res) => {
     if (includeContactOut && roles.length > 0) {
       try {
         // Convert industry to ContactOut's accepted industry values
-        let convertedContactOutIndustry = undefined;
+        let convertedContactOutIndustries = { primary: undefined, secondary: undefined };
         if (industries.length > 0) {
-          convertedContactOutIndustry = await openaiService.convertToContactOutIndustry(industries[0]);
-          console.log(`ContactOut industry conversion: ${industries[0]} → ${convertedContactOutIndustry}`);
+          convertedContactOutIndustries = await openaiService.convertToContactOutIndustry(industries[0]);
+          console.log(`ContactOut industry conversion: ${industries[0]} → Primary: ${convertedContactOutIndustries.primary}, Secondary: ${convertedContactOutIndustries.secondary}`);
         }
 
-        const contactOutSearchCriteria = {
+        // --- Primary Search ---
+        const primarySearchCriteria = {
           title: roles[0], // Use first role
           location: location,
-          industry: convertedContactOutIndustry, // Use converted industry
+          industry: convertedContactOutIndustries.primary, // Use primary industry
           size: 25 // ContactOut default page size
         };
 
-        console.log('ContactOut search criteria:', contactOutSearchCriteria);
+        console.log('ContactOut primary search criteria:', primarySearchCriteria);
+        const primaryContactOutResponse = await contactOutService.getMultiplePages(primarySearchCriteria, 24); // Fetch up to 600
+        let allContactOutProfiles = [];
 
-        const contactOutResponse = await contactOutService.searchProfilesByCriteria(contactOutSearchCriteria);
-
-        if (contactOutResponse.success && contactOutResponse.results && contactOutResponse.results.profiles) {
-          let allContactOutProfiles = [...contactOutResponse.results.profiles];
-
-          // Try to get additional pages if available
-          if (contactOutResponse.results.hasMore && allContactOutProfiles.length < 600) {
-            try {
-              const multiPageResponse = await contactOutService.getMultiplePages(contactOutSearchCriteria, 24); // 24 pages * 25 results/page = 600
-              if (multiPageResponse.success && multiPageResponse.results.profiles) {
-                allContactOutProfiles = multiPageResponse.results.profiles;
-              }
-            } catch (paginationError) {
-              console.error('ContactOut pagination failed:', paginationError);
-            }
-          }
-
-          // Limit to 600 profiles
-          if (allContactOutProfiles.length > 600) {
-            allContactOutProfiles = allContactOutProfiles.slice(0, 600);
-            console.log('Trimmed ContactOut profiles to 600 limit');
-          }
-
-          console.log(`Final ContactOut profiles count: ${allContactOutProfiles.length}`);
-
-          // Convert ContactOut profiles to our standard format
-          contactOutResults = allContactOutProfiles.map(profile => ({
-            // Convert ContactOut format to our standard format
-            title: `${profile.fullName} - ${profile.title || 'Professional'} - ${profile.company?.name || 'Company'}`,
-            link: profile.linkedInUrl || '',
-            snippet: `${profile.fullName} • ${profile.location} • ${profile.title || ''} at ${profile.company?.name || ''}`,
-            pagemap: {
-              metatags: [{
-                'profile:first_name': profile.fullName ? profile.fullName.split(' ')[0] || '' : '',
-                'profile:last_name': profile.fullName ? profile.fullName.split(' ').slice(1).join(' ') || '' : '',
-                'og:description': `${profile.fullName} • ${profile.location} • ${profile.title || ''}`
-              }]
-            },
-            // Include the transformed fields directly
-            fullName: profile.fullName,
-            title: profile.title,
-            location: profile.location,
-            industry: profile.industry,
-            company: profile.company,
-            linkedInUrl: profile.linkedInUrl,
-            liVanity: profile.liVanity,
-            // Add ContactOut specific data
-            contactOutData: profile.contactOutData,
-            relevanceScore: 100,
-            source: 'contactout'
-          }));
+        if (primaryContactOutResponse.success && primaryContactOutResponse.results && primaryContactOutResponse.results.profiles) {
+          allContactOutProfiles = [...primaryContactOutResponse.results.profiles];
         }
+
+        // --- Secondary Search Fallback ---
+        if (allContactOutProfiles.length < 400 && convertedContactOutIndustries.secondary) {
+          console.log(`Primary ContactOut search returned ${allContactOutProfiles.length} profiles. Trying secondary industry: "${convertedContactOutIndustries.secondary}"`);
+
+          const secondarySearchCriteria = {
+            title: roles[0],
+            location: location,
+            industry: convertedContactOutIndustries.secondary,
+            size: 25
+          };
+
+          console.log('ContactOut secondary search criteria:', secondarySearchCriteria);
+          const secondaryContactOutResponse = await contactOutService.getMultiplePages(secondarySearchCriteria, 24); // Fetch up to 600
+
+          if (secondaryContactOutResponse.success && secondaryContactOutResponse.results && secondaryContactOutResponse.results.profiles) {
+            const secondaryProfiles = secondaryContactOutResponse.results.profiles;
+            // Combine and deduplicate
+            const existingLiVanities = new Set(allContactOutProfiles.map(p => p.liVanity).filter(Boolean));
+            const uniqueSecondaryProfiles = secondaryProfiles.filter(p => p.liVanity && !existingLiVanities.has(p.liVanity));
+
+            allContactOutProfiles.push(...uniqueSecondaryProfiles);
+            console.log(`Added ${uniqueSecondaryProfiles.length} unique profiles from secondary ContactOut search. New total: ${allContactOutProfiles.length}`);
+          }
+        }
+
+        // Limit to 600 profiles
+        if (allContactOutProfiles.length > 600) {
+          allContactOutProfiles = allContactOutProfiles.slice(0, 600);
+          console.log('Trimmed ContactOut profiles to 600 limit');
+        }
+
+        console.log(`Final ContactOut profiles count: ${allContactOutProfiles.length}`);
+
+        // Convert ContactOut profiles to our standard format
+        contactOutResults = allContactOutProfiles.map(profile => ({
+          // Convert ContactOut format to our standard format
+          title: `${profile.fullName} - ${profile.title || 'Professional'} - ${profile.company?.name || 'Company'}`,
+          link: profile.linkedInUrl || '',
+          snippet: `${profile.fullName} • ${profile.location} • ${profile.title || ''} at ${profile.company?.name || ''}`,
+          pagemap: {
+            metatags: [{
+              'profile:first_name': profile.fullName ? profile.fullName.split(' ')[0] || '' : '',
+              'profile:last_name': profile.fullName ? profile.fullName.split(' ').slice(1).join(' ') || '' : '',
+              'og:description': `${profile.fullName} • ${profile.location} • ${profile.title || ''}`
+            }]
+          },
+          // Include the transformed fields directly
+          fullName: profile.fullName,
+          title: profile.title,
+          location: profile.location,
+          industry: profile.industry,
+          company: profile.company,
+          linkedInUrl: profile.linkedInUrl,
+          liVanity: profile.liVanity,
+          // Add ContactOut specific data
+          contactOutData: profile.contactOutData,
+          relevanceScore: 100,
+          source: 'contactout'
+        }));
       } catch (contactOutError) {
         console.error('ContactOut search failed:', contactOutError);
         // Continue with other results even if ContactOut fails

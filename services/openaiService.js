@@ -1095,7 +1095,7 @@ exports.convertToRelevantIndustry = async (industryInput) => {
     }
 
     if (!industryInput || typeof industryInput !== 'string') {
-      return industryInput; // Return as-is if invalid input
+      return { primary: industryInput, secondary: '' }; // Return object for consistency
     }
 
     console.log(`Converting industry input: ${industryInput}`);
@@ -1259,33 +1259,35 @@ exports.convertToRelevantIndustry = async (industryInput) => {
         messages: [
           {
             role: 'system',
-            content: `You are an industry classification assistant. Your task is to match user input to the most relevant industry from a predefined list.
+            content: `You are an industry classification assistant. Your task is to match user input to the TWO most relevant industries from a predefined list, in order of priority.
 
 Instructions:
-1. Analyze the input industry/term and find the MOST RELEVANT match from the predefined industries list.
+1. Analyze the input industry/term and find the TWO MOST RELEVANT matches from the predefined industries list.
 2. Consider synonyms, related terms, and industry classifications (e.g., "Tech" → "Computer Software", "Fintech" → "Financial Services", "Healthcare" → "Hospital & Health Care").
-3. If the input is already an exact match from the list, return it as-is.
-4. If no close match exists, return the original input unchanged.
-5. Return ONLY the matched industry name - no explanations or additional text.
-6. Be case-sensitive to the predefined list format.
+3. If the input is already an exact match from the list, return it as the primary industry and find a secondary related industry.
+4. Return the results as a JSON object with "primary" and "secondary" fields.
+5. The "primary" field should contain the most relevant industry match.
+6. The "secondary" field should contain the second most relevant industry match.
+7. Be case-sensitive to the predefined list format.
+8. If only one relevant industry can be found, leave the secondary field as an empty string.
 
 Predefined Industries List:
 ${predefinedIndustries.join('\n')}
 
 Examples:
-- "Tech" → "Computer Software"
-- "Fintech" → "Financial Services" 
-- "Healthcare" → "Hospital & Health Care"
-- "SaaS" → "Computer Software"
-- "EdTech" → "E-Learning"
-- "Automotive Industry" → "Automotive"`
+- "Tech" → {"primary": "Computer Software", "secondary": "Information Technology and Services"}
+- "Fintech" → {"primary": "Financial Services", "secondary": "Banking"}
+- "Healthcare" → {"primary": "Hospital & Health Care", "secondary": "Medical Practice"}
+- "SaaS" → {"primary": "Computer Software", "secondary": "Internet"}
+- "EdTech" → {"primary": "E-Learning", "secondary": "Education Management"}`
           },
           {
             role: 'user',
             content: `Industry input: ${industryInput}`
           }
         ],
-        temperature: 0.1
+        temperature: 0.1,
+        response_format: { type: "json_object" }
       },
       {
         headers: {
@@ -1296,18 +1298,27 @@ Examples:
     );
 
     // Parse the response
-    const convertedIndustry = response.data.choices[0].message.content.trim();
+    const content = response.data.choices[0].message.content.trim();
+    const result = JSON.parse(content);
 
-    console.log(`Converted industry: ${industryInput} → ${convertedIndustry}`);
+    const primary = result.primary || industryInput;
+    const secondary = result.secondary || '';
 
-    // Validate that the response is from our predefined list
-    if (predefinedIndustries.includes(convertedIndustry)) {
-      return convertedIndustry;
-    } else {
-      // If OpenAI returned something not in our list, return the original input
-      console.warn(`OpenAI returned industry not in predefined list: ${convertedIndustry}. Using original: ${industryInput}`);
-      return industryInput;
+    console.log(`Converted industry: ${industryInput} → Primary: ${primary}, Secondary: ${secondary}`);
+
+    // Validate that the responses are from our predefined list
+    const validPrimary = predefinedIndustries.includes(primary) ? primary : industryInput;
+    const validSecondary = predefinedIndustries.includes(secondary) ? secondary : '';
+
+    if (validPrimary !== primary) {
+      console.warn(`OpenAI returned primary industry not in predefined list: ${primary}. Using original: ${industryInput}`);
     }
+
+    if (validSecondary !== secondary && secondary !== '') {
+      console.warn(`OpenAI returned secondary industry not in predefined list: ${secondary}. Using empty string.`);
+    }
+
+    return { primary: validPrimary, secondary: validSecondary };
 
   } catch (error) {
     console.error('Error converting industry:', error);
@@ -1331,7 +1342,7 @@ Examples:
     }
 
     // Return original input on error
-    return industryInput;
+    return { primary: industryInput, secondary: '' };
   }
 };
 
@@ -1373,7 +1384,7 @@ exports.generateIndustryVariations = async (industry, searchEngine = 'google') =
     else {
       systemPrompt = `You are a LinkedIn profile search expert helping generate powerful industry keyword variations for search queries.
     
-    Your goal is to return 3-4 variations of a given industry term that reflect how professionals describe their background on LinkedIn.
+    Your goal is to return 2 variations of a given industry term that reflect how professionals describe their background on LinkedIn.
     
     Instructions:
     1. Include **realistic multi-word phrases**, **abbreviations**, and **job-field jargon** commonly used on LinkedIn.
@@ -1383,9 +1394,9 @@ exports.generateIndustryVariations = async (industry, searchEngine = 'google') =
     5. Think of **what people say they work in**, not just what the industry is called.
     
     Examples:
-    - "SaaS" → ["saas", "software as a service", "cloud software", "software development", "b2b software", "enterprise tech"]
-    - "Fintech" → ["fintech", "financial technology", "banking tech", "payments", "digital finance", "crypto platforms"]
-    - "Media" → ["media", "digital media", "advertising", "content strategy", "broadcasting", "publishing"]
+    - "SaaS" → ["cloud software", "software development"]
+    - "Fintech" → ["financial technology", "banking tech"]
+    - "Media" → ["digital media", "advertising"]
     `;
     }
 
@@ -1874,6 +1885,18 @@ Instructions:
 // Convert industry to ContactOut's accepted industry values
 exports.convertToContactOutIndustry = async (industryInput) => {
   try {
+    if (!OPENAI_API_KEY) {
+      throw new Error('OpenAI API key is not configured');
+    }
+
+    if (!isValidOpenAIKey(OPENAI_API_KEY)) {
+      throw new Error('Invalid OpenAI API key format');
+    }
+
+    if (!industryInput || typeof industryInput !== 'string') {
+      return { primary: 'Information Technology & Services', secondary: 'Computer Software' };
+    }
+
     const contactOutIndustries = [
       'Defense & Space', 'Computer Hardware', 'Computer Software', 'Computer Networking', 'Internet', 'Semiconductors', 'Telecommunications',
       'Law Practice', 'Legal Services', 'Management Consulting', 'Biotechnology', 'Medical Practice', 'Hospital & Health Care', 'Pharmaceuticals',
@@ -1901,7 +1924,7 @@ exports.convertToContactOutIndustry = async (industryInput) => {
       'Renewables & Environment', 'Glass, Ceramics & Concrete', 'Packaging & Containers', 'Industrial Automation', 'Government Relations'
     ];
 
-    const prompt = `Convert the following industry term to the most relevant ContactOut industry category.
+    const prompt = `You are an industry classification assistant. Your task is to match user input to the TWO most relevant industries from the ContactOut predefined list, in order of priority.
 
 Input industry: "${industryInput}"
 
@@ -1909,15 +1932,18 @@ ContactOut accepted industries:
 ${contactOutIndustries.join(', ')}
 
 Rules:
-1. Return ONLY the exact industry name from the ContactOut list above
-2. Choose the most semantically similar and relevant match
-3. If the input is "SaaS" or "Software as a Service", return "Computer Software"
-4. If the input is "Fintech" or "Financial Technology", return "Financial Services"
-5. If the input is "Edtech" or "Education Technology", return "E-learning"
-6. If the input is "Healthtech" or "Healthcare Technology", return "Hospital & Health Care"
-7. If no close match exists, return "Information Technology & Services" as the default
+1. You MUST return exactly two industries as a JSON object with "primary" and "secondary" fields.
+2. The "primary" field must contain the most relevant industry match.
+3. The "secondary" field MUST contain the second most relevant industry match. It cannot be empty.
+4. If a closely related second option is not available, select a broader parent category from the list. For example, for "Industrial Automation", a good secondary choice is "Machinery".
+5. Do not return the same industry for both primary and secondary.
+6. Return ONLY the exact industry name from the ContactOut list above.
+7. If the input is "SaaS" or "Software as a Service", return "Computer Software" as primary.
+8. If the input is "Fintech" or "Financial Technology", return "Financial Services" as primary.
+9. If no close match exists, use "Information Technology & Services" as the primary.
 
-Industry:`;
+JSON format:
+{"primary": "Industry 1", "secondary": "Industry 2"}`;
 
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
@@ -1925,12 +1951,17 @@ Industry:`;
         model: 'gpt-4o-mini',
         messages: [
           {
-            role: 'user',
+            role: 'system',
             content: prompt
+          },
+          {
+            role: 'user',
+            content: `Industry input: ${industryInput}`
           }
         ],
-        max_tokens: 50,
-        temperature: 0.1
+        max_tokens: 100,
+        temperature: 0.1,
+        response_format: { type: "json_object" }
       },
       {
         headers: {
@@ -1940,19 +1971,36 @@ Industry:`;
       }
     );
 
-    const convertedIndustry = response.data.choices[0].message.content.trim();
+    const content = response.data.choices[0].message.content.trim();
+    const result = JSON.parse(content);
+
+    const primary = result.primary || 'Information Technology & Services';
+    let secondary = result.secondary || '';
+
+    console.log(`ContactOut industry conversion: ${industryInput} → Primary: ${primary}, Secondary: ${secondary}`);
 
     // Validate that the returned industry is in our accepted list
-    if (contactOutIndustries.includes(convertedIndustry)) {
-      console.log(`ContactOut industry conversion: ${industryInput} → ${convertedIndustry}`);
-      return convertedIndustry;
-    } else {
-      console.warn(`OpenAI returned invalid ContactOut industry: ${convertedIndustry}, using default`);
-      return 'Information Technology & Services';
+    const validPrimary = contactOutIndustries.includes(primary) ? primary : 'Information Technology & Services';
+    let validSecondary = contactOutIndustries.includes(secondary) ? secondary : '';
+
+    // Fallback logic
+    if (!validSecondary || validSecondary === validPrimary) {
+      console.warn(`ContactOut secondary industry was invalid, empty, or same as primary. Applying fallback.`);
+      validSecondary = validPrimary !== 'Computer Software' ? 'Computer Software' : 'Information Technology & Services';
     }
+
+    if (validPrimary !== primary) {
+      console.warn(`OpenAI returned invalid ContactOut primary industry: ${primary}, using default`);
+    }
+
+    if (validSecondary !== secondary && secondary !== '') {
+      console.warn(`OpenAI returned invalid ContactOut secondary industry: ${secondary}, using fallback`);
+    }
+
+    return { primary: validPrimary, secondary: validSecondary };
 
   } catch (error) {
     console.error('Error converting industry for ContactOut:', error);
-    return 'Information Technology & Services'; // Default fallback
+    return { primary: 'Information Technology & Services', secondary: 'Computer Software' }; // Default fallback
   }
 };

@@ -241,7 +241,8 @@ const login = async (req, res, next) => {
         trialEndDate: trialEndDate,
         remainingTrialDays: user.getRemainingTrialDays(),
         isTrialValid: user.isTrialValid(),
-        trialStatus: user.trialEnded ? 'ended' : (user.isTrialValid() ? 'active' : 'expired')
+        trialStatus: user.trialEnded ? 'ended' : (user.isTrialValid() ? 'active' : 'expired'),
+        hasSeenOnboardingVideo: user.hasSeenOnboardingVideo
       },
       accessToken,
       refreshToken
@@ -250,6 +251,18 @@ const login = async (req, res, next) => {
     // Pass the error to the error handling middleware
     next(error);
   }
+};
+
+const getOnboardingStatus = async (req, res, next) => {
+  const user = await User.findOne({ _id: req.user.userId });
+  res.status(StatusCodes.OK).json({ hasSeenOnboardingVideo: user.hasSeenOnboardingVideo });
+};
+
+const updateOnboardingStatus = async (req, res, next) => {
+  const user = await User.findOne({ _id: req.user.userId });
+  user.hasSeenOnboardingVideo = true;
+  await user.save();
+  res.status(StatusCodes.OK).json({ hasSeenOnboardingVideo: user.hasSeenOnboardingVideo });
 };
 
 const refreshToken = async (req, res, next) => {
@@ -476,6 +489,8 @@ module.exports = {
   verifyEmail,
   resendVerificationCode,
   login,
+  getOnboardingStatus,
+  updateOnboardingStatus,
   refreshToken,
   getCurrentUser,
   getTrialStatus,
