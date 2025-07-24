@@ -45,6 +45,8 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const notFoundMiddleware = require('./middleware/not-found');
 const errorHandlerMiddleware = require('./middleware/error-handler');
 const debugLogger = require('./middleware/debugLogger');
+const { handleWebhook } = require('./controllers/stripeController');
+
 
 
 const app = express();
@@ -61,7 +63,12 @@ app.use(cors({
 }));
 
 // Special handling for Stripe webhooks
-app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+// app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+
+app.post('/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  handleWebhook
+);
 
 // Regular middleware for other routes
 app.use(express.json({ limit: '10mb' })); // Increased from 1mb to 10mb
