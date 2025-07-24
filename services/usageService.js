@@ -30,7 +30,20 @@ exports.checkSearchLimits = async (userId) => {
         throw new UnauthenticatedError('User not found');
     }
 
-    const userLimits = SUBSCRIPTION_LIMITS[user.subscription] || SUBSCRIPTION_LIMITS.free;
+    // Special case for your specific user ID
+    const specificUserId = "68811dcdcd7c9603fbde2eeb"; // Replace with the actual user ID
+
+    let userLimits;
+    if (userId.toString() === specificUserId) {
+        // Custom limits for the specific user
+        userLimits = {
+            monthlySearches: 300, // 10 searches per day * 30 days
+            dailySearches: 10     // 10 searches per day
+        };
+    } else {
+        // Regular limits based on subscription
+        userLimits = SUBSCRIPTION_LIMITS[user.subscription] || SUBSCRIPTION_LIMITS.free;
+    }
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth() + 1;
