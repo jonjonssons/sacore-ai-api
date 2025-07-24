@@ -28,7 +28,7 @@ exports.handleWebhook = async (req, res, next) => {
   console.log('🔔 WEBHOOK RECEIVED - Start of handleWebhook');
   console.log('Headers received:', req.headers);
   console.log('Body type:', typeof req.body);
-  console.log('Body length:', req.body ? req.body.length : 'No body');
+  console.log('Body length:', req.body ? JSON.stringify(req.body).length : 'No body');
 
   const sig = req.headers['stripe-signature'];
   console.log('Stripe signature present:', !!sig);
@@ -59,24 +59,24 @@ exports.handleWebhook = async (req, res, next) => {
     console.log('Event ID:', event.id);
 
     // Check if this is a credit purchase
-    switch (event.type) {
-      case 'checkout.session.completed':
-        await handleCheckoutSessionCompleted(event.data.object);
-        break;
-      case 'invoice.paid':
-        await handleInvoicePaid(event.data.object);
-        break;
-      case 'customer.subscription.created':
-      case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event.data.object);
-        break;
-      case 'customer.subscription.deleted':
-        await handleSubscriptionDeleted(event.data.object);
-        break;
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
-    }
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      console.log('📦 Checkout session completed - metadata:', session.metadata);
 
+      if (session.metadata && session.metadata.type === 'credit_purchase') {
+        console.log('💳 Processing credit purchase');
+        // Handle credit purchase
+        await stripeTopUpService.handleSuccessfulCreditPurchase(session);
+      } else {
+        console.log('📋 Processing subscription (calling stripeService.handleWebhookEvent)');
+        // Handle subscription (existing code)
+        await stripeService.handleWebhookEvent(event);
+      }
+    } else {
+      console.log('🔄 Processing other event type:', event.type);
+      // Handle other events with existing code
+      await stripeService.handleWebhookEvent(event);
+    }
 
     console.log('✅ Webhook processed successfully');
     res.status(StatusCodes.OK).json({ received: true });
