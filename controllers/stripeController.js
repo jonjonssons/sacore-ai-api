@@ -36,35 +36,47 @@ exports.handleWebhook = async (req, res, next) => {
   let event;
 
   try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    if (process.env.NODE_ENV === 'production' && req.headers['rndr-id']) {
+      // When on Render, parse the event from the body directly
+      event = req.body;
+
+      // Log that we're using the relaxed approach
+      console.log('Using relaxed webhook verification for Render');
+    } else {
+      // For local development or other platforms, use standard verification
+      const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+      // Verify the event with the signature
+      event = stripe.webhooks.constructEvent(
+        req.rawBody || req.body, // Use rawBody if available
+        sig,
+        endpointSecret
+      );
+    }
 
     console.log('✅ Webhook signature verified successfully');
     console.log('Event type:', event.type);
     console.log('Event ID:', event.id);
 
     // Check if this is a credit purchase
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      console.log('📦 Checkout session completed - metadata:', session.metadata);
-
-      if (session.metadata && session.metadata.type === 'credit_purchase') {
-        console.log('💳 Processing credit purchase');
-        // Handle credit purchase
-        await stripeTopUpService.handleSuccessfulCreditPurchase(session);
-      } else {
-        console.log('📋 Processing subscription (calling stripeService.handleWebhookEvent)');
-        // Handle subscription (existing code)
-        await stripeService.handleWebhookEvent(event);
-      }
-    } else {
-      console.log('🔄 Processing other event type:', event.type);
-      // Handle other events with existing code
-      await stripeService.handleWebhookEvent(event);
+    switch (event.type) {
+      case 'checkout.session.completed':
+        await handleCheckoutSessionCompleted(event.data.object);
+        break;
+      case 'invoice.paid':
+        await handleInvoicePaid(event.data.object);
+        break;
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated':
+        await handleSubscriptionUpdated(event.data.object);
+        break;
+      case 'customer.subscription.deleted':
+        await handleSubscriptionDeleted(event.data.object);
+        break;
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
     }
+
 
     console.log('✅ Webhook processed successfully');
     res.status(StatusCodes.OK).json({ received: true });

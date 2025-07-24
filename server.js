@@ -65,10 +65,20 @@ app.use(cors({
 // Special handling for Stripe webhooks
 // app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
-app.post('/api/stripe/webhook',
-  express.raw({ type: 'application/json' }),
-  handleWebhook
-);
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  // Store the raw body for Stripe signature verification
+  req.rawBody = req.body;
+
+  // Parse the body for our route handlers
+  if (req.body.length) {
+    req.body = JSON.parse(req.body.toString());
+  }
+
+  next();
+});
+
+// Add direct webhook handler route
+app.post('/api/stripe/webhook', handleWebhook);
 
 // Regular middleware for other routes
 app.use(express.json({ limit: '10mb' })); // Increased from 1mb to 10mb
