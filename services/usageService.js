@@ -31,11 +31,11 @@ exports.checkSearchLimits = async (userId) => {
     }
 
     // Special case for your specific user ID
-    const specificUserId = "68811dcdcd7c9603fbde2eeb"; // Replace with the actual user ID
-
+    const specificUserIds = ["68811dcdcd7c9603fbde2eeb", "687fae236c2df025fa30a880"]; // Array of specific user IDs
     let userLimits;
-    if (userId.toString() === specificUserId) {
-        // Custom limits for the specific user
+
+    if (specificUserIds.includes(userId.toString())) {
+        // Custom limits for the specific users
         userLimits = {
             monthlySearches: 300, // 10 searches per day * 30 days
             dailySearches: 10     // 10 searches per day
