@@ -27,4 +27,7 @@ router.get('/users', adminController.getUsers);
 router.get('/users/:userId', adminController.getUserDetails);
 router.patch('/users/:userId', adminController.updateUser);
 
+// New endpoint for adding extra searches
+router.post('/users/:userId/add-searches', adminController.addExtraSearches);
+
 module.exports = router;

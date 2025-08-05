@@ -207,62 +207,123 @@ const handleCheckoutSessionCompleted = async (session) => {
   return user;
 };
 
+// Helper to find plan details by price ID
+const findPlanByPriceId = (priceId) => {
+  for (const planKey of Object.keys(PLANS)) {
+    const plan = PLANS[planKey];
+    if (plan.monthly.priceId === priceId) {
+      return {
+        planName: plan.name.toLowerCase(),
+        credits: plan.credits,
+        billingInterval: 'monthly',
+      };
+    }
+    if (plan.yearly.priceId === priceId) {
+      return {
+        planName: plan.name.toLowerCase(),
+        credits: plan.credits,
+        billingInterval: 'yearly',
+      };
+    }
+  }
+  return null;
+};
+
+
 // Handle invoice paid
 const handleInvoicePaid = async (invoice) => {
 
   const isInitialInvoice = invoice.billing_reason === 'subscription_create';
-  // If this is the initial invoice and we've already handled the checkout session, don't add credits again
+  // If this is the initial invoice from a new subscription, we've already handled
+  // adding credits in the 'checkout.session.completed' event.
   if (isInitialInvoice) {
-    console.log('Skipping credit addition for initial invoice as it was handled in checkout session');
+    console.log('Skipping credit addition for initial invoice as it was handled in checkout session.');
     return;
   }
-  const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
+
   const customerId = invoice.customer;
+  if (!customerId) {
+    console.error('Invoice paid event is missing customer ID.', { invoiceId: invoice.id });
+    return;
+  }
 
   const user = await User.findOne({ stripeCustomerId: customerId });
 
   if (!user) {
-    throw new Error('User not found');
+    // This can happen if a customer is created in Stripe but not in your DB.
+    // Or if a webhook is received for a customer you've deleted.
+    throw new Error(`User not found for stripeCustomerId: ${customerId}`);
   }
+
+  // Get plan details from the invoice line items, which is the source of truth.
+  if (!invoice.lines || !invoice.lines.data || invoice.lines.data.length === 0) {
+    console.error('Invoice paid event is missing line items.', { invoiceId: invoice.id });
+    return;
+  }
+
+  const priceId = invoice.lines.data[0].price.id;
+  const planDetails = findPlanByPriceId(priceId);
+
+  if (!planDetails) {
+    console.error(`Could not find a plan associated with price ID: ${priceId}. This may be a one-time payment not handled here.`);
+    return;
+  }
+
+  const { planName, credits: planCredits, billingInterval } = planDetails;
 
   const originalCredits = user.credits;
 
-
-  // Reset credits based on subscription
-  const plan = user.subscription;
-  let planCredits = 0;
-
-  switch (plan) {
-    case 'basic':
-      planCredits = PLANS.BASIC.credits;
-      break;
-    case 'explorer':
-      planCredits = PLANS.EXPLORER.credits;
-      break;
-    case 'pro':
-      planCredits = PLANS.PRO.credits;
-      break;
-  }
-
-  // Add new plan credits to existing credits instead of replacing
+  // Add new plan credits for the renewal
   user.credits += planCredits;
   const newCredits = user.credits;
 
+  // Also update the user's subscription info to ensure it's in sync with Stripe.
+  user.subscription = planName;
+  user.billingInterval = billingInterval;
+
   await user.save();
 
+  console.log(`User ${user.email} subscription renewed. Plan: ${planName}, Interval: ${billingInterval}. Added ${planCredits} credits.`);
+
+
   // Create credit transaction entry for plan renewal
-  const intervalText = user.billingInterval === 'yearly' ? ' (Yearly)' : ' (Monthly)';
+  const intervalText = billingInterval === 'yearly' ? ' (Yearly)' : ' (Monthly)';
   await CreditTransaction.create({
     user: user._id,
-    amount: newCredits - originalCredits,
+    amount: planCredits,
     type: 'PLAN_CHANGE',
-    description: `Plan renewed: ${plan.charAt(0).toUpperCase() + plan.slice(1)}${intervalText} (+${planCredits} credits)`,
+    description: `Plan renewed: ${planName.charAt(0).toUpperCase() + planName.slice(1)}${intervalText} (+${planCredits} credits)`,
     balance: newCredits,
     createdAt: new Date()
   });
 
   return user;
 };
+
+// List invoices for a user
+exports.listUserInvoices = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user || !user.stripeCustomerId) {
+    throw new Error('User or Stripe customer not found.');
+  }
+
+  const invoices = await stripe.invoices.list({
+    customer: user.stripeCustomerId,
+    limit: 100, // You can add pagination later if needed
+  });
+
+  // Format the invoices to be more front-end friendly
+  return invoices.data.map(invoice => ({
+    id: invoice.id,
+    date: new Date(invoice.created * 1000).toLocaleDateString(),
+    amount: (invoice.amount_paid / 100).toFixed(2),
+    currency: invoice.currency.toUpperCase(),
+    status: invoice.status,
+    pdf: invoice.invoice_pdf, // Link to the downloadable PDF
+    url: invoice.hosted_invoice_url, // Link to the Stripe-hosted invoice page
+  }));
+};
+
 
 // Handle subscription canceled
 const handleSubscriptionCanceled = async (subscription) => {
@@ -281,6 +342,125 @@ const handleSubscriptionCanceled = async (subscription) => {
   await user.save();
 
   return user;
+};
+
+// Cancel subscription
+exports.cancelSubscription = async (userId) => {
+  try {
+    // Find user
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    if (!user.stripeCustomerId) {
+      throw new Error('User does not have a Stripe customer ID');
+    }
+
+    // Get active subscriptions for customer
+    const subscriptions = await stripe.subscriptions.list({
+      customer: user.stripeCustomerId,
+      status: 'active',
+      limit: 1
+    });
+
+    if (subscriptions.data.length === 0) {
+      throw new Error('No active subscriptions found');
+    }
+
+    // Get the subscription ID
+    const subscriptionId = subscriptions.data[0].id;
+
+    // Cancel the subscription at period end
+    const canceledSubscription = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: true
+    });
+
+    // Helper function to safely convert timestamp
+    const safeTimestampToISO = (timestamp) => {
+      if (!timestamp || timestamp === null) return null;
+      try {
+        const date = new Date(timestamp * 1000);
+        if (isNaN(date.getTime())) return null;
+        return date.toISOString();
+      } catch (error) {
+        console.error('Invalid timestamp:', timestamp, error);
+        return null;
+      }
+    };
+
+    // Return subscription details with cancellation info
+    return {
+      id: canceledSubscription.id,
+      status: canceledSubscription.status,
+      cancelAtPeriodEnd: canceledSubscription.cancel_at_period_end,
+      currentPeriodEnd: safeTimestampToISO(canceledSubscription.current_period_end),
+      canceledAt: safeTimestampToISO(Date.now() / 1000)
+    };
+  } catch (error) {
+    console.error('Error canceling subscription:', error);
+    throw error;
+  }
+};
+
+// Immediately cancel subscription
+exports.cancelSubscriptionImmediately = async (userId) => {
+  try {
+    // Find user
+    const user = await User.findById(userId);
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    if (!user.stripeCustomerId) {
+      throw new Error('User does not have a Stripe customer ID');
+    }
+
+    // Get active subscriptions for customer
+    const subscriptions = await stripe.subscriptions.list({
+      customer: user.stripeCustomerId,
+      status: 'active',
+      limit: 1
+    });
+
+    if (subscriptions.data.length === 0) {
+      throw new Error('No active subscriptions found');
+    }
+
+    // Get the subscription ID
+    const subscriptionId = subscriptions.data[0].id;
+
+    // Cancel the subscription immediately
+    const canceledSubscription = await stripe.subscriptions.cancel(subscriptionId);
+
+    // Update user to free plan immediately
+    user.subscription = 'free';
+    user.credits = Math.min(user.credits, 10); // Set to free tier credits but don't increase if lower
+    await user.save();
+
+    // Create credit transaction entry for plan downgrade if credits were reduced
+    if (user.credits < subscriptions.data[0].metadata.originalCredits) {
+      await CreditTransaction.create({
+        user: userId,
+        amount: 10 - subscriptions.data[0].metadata.originalCredits,
+        type: 'PLAN_CHANGE',
+        description: 'Plan downgraded to Free (subscription canceled immediately)',
+        balance: user.credits,
+        createdAt: new Date()
+      });
+    }
+
+    return {
+      id: canceledSubscription.id,
+      status: canceledSubscription.status,
+      canceled: true
+    };
+  } catch (error) {
+    console.error('Error canceling subscription immediately:', error);
+    throw error;
+  }
 };
 
 module.exports.PLANS = PLANS;

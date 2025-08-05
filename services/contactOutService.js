@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 const CONTACTOUT_BASE_URL = 'https://api.contactout.com/v1';
-const CONTACTOUT_TOKEN = process.env.CONTACTOUT_TOKEN || '23aG4rNAMaClrTxqaOltCdLU';
+const CONTACTOUT_TOKEN = process.env.CONTACTOUT_API_KEY || '23aG4rNAMaClrTxqaOltCdLU';
 
 class ContactOutService {
     constructor() {

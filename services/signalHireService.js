@@ -174,7 +174,7 @@ exports.getProfileById = async (profileId) => {
 };
 
 // Search for multiple profiles by LinkedIn URLs (batch operation)
-exports.searchProfiles = async (linkedinUrls, callbackUrl, customParameters = {}, withoutContacts = true) => {
+exports.searchProfiles = async (linkedinUrls, callbackUrl, customParameters = {}, withoutContacts = false) => {
   // Normalize all LinkedIn URLs
   const normalizedUrls = linkedinUrls.map(url => normalizeLinkedInUrl(url));
 

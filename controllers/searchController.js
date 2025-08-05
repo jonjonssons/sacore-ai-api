@@ -118,11 +118,11 @@ exports.searchLinkedInProfiles = async (req, res) => {
   });
 
   // Ensure we have at least one search service enabled
-  if (!includeGoogle && !includeBrave && !includeCsvImport) {
-    return res.status(StatusCodes.BAD_REQUEST).json({
-      error: 'Please enable at least one search service (includeGoogle, includeBrave, or includeCsvImport)'
-    });
-  }
+  // if (!includeGoogle && !includeBrave && !includeCsvImport) {
+  //   return res.status(StatusCodes.BAD_REQUEST).json({
+  //     error: 'Please enable at least one search service (includeGoogle, includeBrave, or includeCsvImport)'
+  //   });
+  // }
 
   if (!Array.isArray(filters) || filters.length === 0) {
     return res.status(StatusCodes.BAD_REQUEST).json({ error: 'Please provide an array of filters' });
@@ -149,18 +149,14 @@ exports.searchLinkedInProfiles = async (req, res) => {
     });
   }
 
-  // Ensure we have roles and industries for the new query strategy
+  // Ensure we have roles for the new query strategy
   if (roles.length === 0) {
     return res.status(StatusCodes.BAD_REQUEST).json({
       error: 'Please provide at least one role/title filter'
     });
   }
 
-  if (industries.length === 0) {
-    return res.status(StatusCodes.BAD_REQUEST).json({
-      error: 'Please provide at least one industry filter'
-    });
-  }
+  // Industries are now optional - users can search across all industries
 
   try {
     // ============= CSV IMPORT PROCESSING (NEW FEATURE) =============
@@ -189,9 +185,9 @@ exports.searchLinkedInProfiles = async (req, res) => {
           console.log(`Processing ${csvData.length} CSV rows with Gemini AI analysis...`);
 
           // Prepare filters for Gemini AI analysis
-          const titleFilters = roles.map(r => r.toLowerCase().trim());
-          const locationFilters = locations.map(l => l.toLowerCase().trim());
-          const industryFilters = industries.map(i => i.toLowerCase().trim());
+          const titleFilters = roles.filter(r => typeof r === 'string' && r.trim() !== '').map(r => r.toLowerCase().trim());
+          const locationFilters = locations.filter(l => typeof l === 'string' && l.trim() !== '').map(l => l.toLowerCase().trim());
+          const industryFilters = industries.filter(i => typeof i === 'string' && i.trim() !== '').map(i => i.toLowerCase().trim());
 
           const aiFilters = {
             title: titleFilters.join(', '),
@@ -306,21 +302,31 @@ exports.searchLinkedInProfiles = async (req, res) => {
     // Generate industry variations for both Google and Brave with different prompts
     console.log(`Generating industry variations for ${industries.length} industries using OpenAI...`);
 
-    // Generate variations for Google (multi-word allowed)
-    const googleVariationsPromises = industries.map(industry =>
-      openaiService.generateIndustryVariations(industry, 'google')
-    );
+    let googleIndustryVariations = [];
+    let braveIndustryVariations = [];
 
-    // Generate variations for Brave (single-word only)
-    const braveVariationsPromises = industries.map(industry =>
-      openaiService.generateIndustryVariations(industry, 'brave')
-    );
+    if (industries.length > 0) {
+      // Generate variations for Google (multi-word allowed)
+      const googleVariationsPromises = industries.map(industry =>
+        openaiService.generateIndustryVariations(industry, 'google')
+      );
 
-    // Wait for all industry variations to be generated
-    const [googleIndustryVariations, braveIndustryVariations] = await Promise.all([
-      Promise.all(googleVariationsPromises),
-      Promise.all(braveVariationsPromises)
-    ]);
+      // Generate variations for Brave (single-word only)
+      const braveVariationsPromises = industries.map(industry =>
+        openaiService.generateIndustryVariations(industry, 'brave')
+      );
+
+      // Wait for all industry variations to be generated
+      const [googleResults, braveResults] = await Promise.all([
+        Promise.all(googleVariationsPromises),
+        Promise.all(braveVariationsPromises)
+      ]);
+
+      googleIndustryVariations = googleResults;
+      braveIndustryVariations = braveResults;
+    } else {
+      console.log('No industries provided - will search across all industries');
+    }
 
     // Create maps for both search engines
     const googleIndustryVariationsMap = {};
@@ -338,22 +344,29 @@ exports.searchLinkedInProfiles = async (req, res) => {
     for (const role of roles) {
       if (!role) continue;
 
-      for (const industry of industries) {
-        if (!industry) continue;
+      if (industries.length > 0) {
+        // Standard logic: Generate queries with industry variations
+        for (const industry of industries) {
+          if (!industry) continue;
 
-        // Get both Google and Brave variations for this industry
-        const googleVariations = googleIndustryVariationsMap[industry] || [industry.toLowerCase()];
-        const braveVariations = braveIndustryVariationsMap[industry] || [industry.toLowerCase()];
+          // Get both Google and Brave variations for this industry
+          const googleVariations = googleIndustryVariationsMap[industry] || [industry.toLowerCase()];
+          const braveVariations = braveIndustryVariationsMap[industry] || [industry.toLowerCase()];
 
-        // Combine both Google and Brave variations for Google search
-        const allVariationsForGoogle = [...new Set([...googleVariations, ...braveVariations])];
+          // Combine both Google and Brave variations for Google search
+          const allVariationsForGoogle = [...new Set([...googleVariations, ...braveVariations])];
 
-        // Create queries for each industry variation
-        for (const industryVariation of allVariationsForGoogle) {
-          // Always use format: site:linkedin.com/in intitle:"role" "role" "location" "industry_variation"
-          const query = `site:linkedin.com/in intitle:"${role.toLowerCase()}" "${role.toLowerCase()}" "${location.toLowerCase()}" "${industryVariation}"`;
-          queries.push(query);
+          // Create queries for each industry variation
+          for (const industryVariation of allVariationsForGoogle) {
+            // Always use format: site:linkedin.com/in intitle:"role" "role" "location" "industry_variation"
+            const query = `site:linkedin.com/in intitle:"${role.toLowerCase()}" "${role.toLowerCase()}" "${location.toLowerCase()}" "${industryVariation}"`;
+            queries.push(query);
+          }
         }
+      } else {
+        // Fallback: Generate queries without industry filter (search all industries)
+        const query = `site:linkedin.com/in intitle:"${role.toLowerCase()}" "${role.toLowerCase()}" "${location.toLowerCase()}"`;
+        queries.push(query);
       }
     }
 
@@ -361,11 +374,13 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
     // ✅ Collect all industry variations for extraction (combine both Google and Brave variations)
     const allIndustryVariationsForExtraction = [];
-    industries.forEach(industry => {
-      const googleVariations = googleIndustryVariationsMap[industry] || [industry.toLowerCase()];
-      const braveVariations = braveIndustryVariationsMap[industry] || [industry.toLowerCase()];
-      allIndustryVariationsForExtraction.push(...googleVariations, ...braveVariations);
-    });
+    if (industries.length > 0) {
+      industries.forEach(industry => {
+        const googleVariations = googleIndustryVariationsMap[industry] || [industry.toLowerCase()];
+        const braveVariations = braveIndustryVariationsMap[industry] || [industry.toLowerCase()];
+        allIndustryVariationsForExtraction.push(...googleVariations, ...braveVariations);
+      });
+    }
 
     // Remove duplicates and include original industries
     const uniqueIndustryVariations = [...new Set([...allIndustryVariationsForExtraction, ...industries])];
@@ -377,23 +392,30 @@ exports.searchLinkedInProfiles = async (req, res) => {
       for (const role of roles) {
         if (!role) continue;
 
-        for (const industry of industries) {
-          if (!industry) continue;
+        if (industries.length > 0) {
+          // Standard logic: Generate queries with industry variations
+          for (const industry of industries) {
+            if (!industry) continue;
 
-          // Get OpenAI-generated variations for this industry (Brave format - single words)
-          const industryVariations = braveIndustryVariationsMap[industry] || [industry.toLowerCase()];
+            // Get OpenAI-generated variations for this industry (Brave format - single words)
+            const industryVariations = braveIndustryVariationsMap[industry] || [industry.toLowerCase()];
 
-          // Create Brave queries for each industry variation
-          for (const industryVariation of industryVariations) {
-            // Use space-separated format for Brave
-            const braveQuery = `site:linkedin.com/in/ intitle:"${role.toLowerCase()}" ${role.toLowerCase()} ${location.toLowerCase()} ${industryVariation}`;
-            braveQueries.push(braveQuery);
+            // Create Brave queries for each industry variation
+            for (const industryVariation of industryVariations) {
+              // Use space-separated format for Brave
+              const braveQuery = `site:linkedin.com/in/ intitle:"${role.toLowerCase()}" ${role.toLowerCase()} ${location.toLowerCase()} ${industryVariation}`;
+              braveQueries.push(braveQuery);
+            }
           }
+        } else {
+          // Fallback: Generate queries without industry filter (search all industries)
+          const braveQuery = `site:linkedin.com/in/ intitle:"${role.toLowerCase()}" ${role.toLowerCase()} ${location.toLowerCase()}`;
+          braveQueries.push(braveQuery);
         }
       }
 
       // Limit Brave queries to control API usage
-      const maxBraveQueries = 10;
+      const maxBraveQueries = Math.min(roles.length * 10, 50); // 10 queries per title, max 50
       const limitedBraveQueries = braveQueries.slice(0, maxBraveQueries);
       braveQueries.length = 0; // Clear original array
       braveQueries.push(...limitedBraveQueries);
@@ -408,41 +430,8 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
     const totalTieredSearches = queries.length * 6;
     // Check subscription limits before processing
-    // const limitCheck = await usageService.checkSearchLimits(req.user.userId);
-    // console.log('Search limits check:', limitCheck);
-
-    // Check subscription limits before processing (skip for special user)
-    const specialUserIds = [
-      '687f290cdbaa807b7a3940b9',
-      '687f386adbaa807b7a39416d',
-      '687f93926c2df025fa30a761'
-    ];
-
-    if (!specialUserIds.includes(req.user.userId)) {
-      const limitCheck = await usageService.checkSearchLimits(req.user.userId);
-      console.log('Search limits check:', limitCheck);
-    } else {
-      console.log('Skipping search limits check for special user:', req.user.userId);
-    }
-
-
-    // Record the search usage (skip for special user)
-    // if (req.user.userId !== specialUserId) {
-    //   await usageService.recordSearch(req.user.userId);
-    if (!specialUserIds.includes(req.user.userId)) {
-      await usageService.recordSearch(req.user.userId);
-      // Base charge: 5 credits for Google CSE search
-      // let totalCredits = 20;
-
-      // // Additional 3 credits if SignalHire is included
-      // // if (includeSignalHire) {
-      // //   totalCredits += 3;
-      // // }
-
-      // await creditService.consumeCredits(req.user.userId, 'SEARCH', totalCredits);
-    } else {
-      console.log('Skipping usage recording and credit consumption for special user:', req.user.userId);
-    }
+    const limitCheck = await usageService.checkSearchLimits(req.user.userId);
+    console.log('Search limits check:', limitCheck);
 
     // Search usage will be recorded after successful results are obtained
 
@@ -452,6 +441,20 @@ exports.searchLinkedInProfiles = async (req, res) => {
     // Base charge: 20 credits for Google CSE search (if included)
     if (includeGoogle || includeBrave) {
       totalCredits += 50;
+    }
+
+    if (totalCredits > 0) {
+      try {
+        const creditCheck = await creditService.checkCredits(req.user.userId, totalCredits);
+        console.log(`✅ Credit check passed:`, creditCheck);
+      } catch (creditError) {
+        console.error('❌ Insufficient credits before search:', creditError);
+        return res.status(403).json({
+          error: 'Insufficient credits',
+          details: creditError.message,
+          requiredCredits: totalCredits
+        });
+      }
     }
 
     // Additional 3 credits if SignalHire is included
@@ -594,130 +597,152 @@ exports.searchLinkedInProfiles = async (req, res) => {
     if (includeSignalHire && roles.length > 0) {
       try {
 
-        // --- Primary Search ---
-        const primarySearchCriteria = {
-          title: roles[0], // Use first role
-          location: location,
-          industry: convertedIndustries.primary,
-          size: 100 // Maximum SignalHire results per page
-        };
-
-        console.log('SignalHire primary search criteria:', primarySearchCriteria);
-        const primarySignalHireResponse = await signalHireService.searchProfilesByCriteria(primarySearchCriteria);
+        // --- Multi-Title Search Strategy ---
         let allSignalHireProfiles = [];
+        const usedUids = new Set(); // Track unique profiles across all searches
 
-        if (primarySignalHireResponse.success && primarySignalHireResponse.results && primarySignalHireResponse.results.profiles) {
-          allSignalHireProfiles = [...primarySignalHireResponse.results.profiles];
+        // Loop through all roles until we reach 500 profiles or run out of roles
+        for (let roleIndex = 0; roleIndex < roles.length && allSignalHireProfiles.length < 500; roleIndex++) {
+          const currentRole = roles[roleIndex];
+          console.log(`\n--- SignalHire Search for Role ${roleIndex + 1}/${roles.length}: "${currentRole}" ---`);
+          console.log(`Current profile count: ${allSignalHireProfiles.length}/500`);
 
-          // Pagination for primary search
-          if (primarySignalHireResponse.results.scrollId && primarySignalHireResponse.results.requestId && allSignalHireProfiles.length < 500) {
-            let currentScrollId = primarySignalHireResponse.results.scrollId;
-            const requestId = primarySignalHireResponse.results.requestId;
-            let page = 1;
+          // Try primary industry first
+          if (convertedIndustries.primary && allSignalHireProfiles.length < 500) {
+            console.log(`Searching with primary industry: "${convertedIndustries.primary}"`);
 
-            while (currentScrollId && allSignalHireProfiles.length < 500) {
-              try {
-                console.log(`Fetching SignalHire primary page ${page + 1} with scrollId:`, currentScrollId);
-                const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
+            const primarySearchCriteria = {
+              title: currentRole,
+              location: location,
+              industry: convertedIndustries.primary,
+              size: 100
+            };
 
-                if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
-                  const remainingSlots = 500 - allSignalHireProfiles.length;
-                  const profilesToAdd = scrollResponse.results.profiles.slice(0, remainingSlots);
-                  allSignalHireProfiles = allSignalHireProfiles.concat(profilesToAdd);
-                  console.log(`Added ${profilesToAdd.length} profiles from primary page ${page + 1}. Total: ${allSignalHireProfiles.length}`);
-                  if (allSignalHireProfiles.length >= 500) {
-                    console.log('Reached 500 SignalHire profiles limit, stopping pagination');
-                    break;
-                  }
-                  if (scrollResponse.results.scrollId) {
-                    currentScrollId = scrollResponse.results.scrollId;
-                  } else {
-                    console.log('No more scrollId available, reached last page for primary search');
-                    break;
-                  }
-                } else {
-                  console.log('No more primary profiles available or empty response');
-                  break;
-                }
-                page++;
-              } catch (scrollError) {
-                console.error(`SignalHire primary scroll search page ${page + 1} failed:`, scrollError);
-                break;
-              }
-            }
-          }
-        }
+            try {
+              const primaryResponse = await signalHireService.searchProfilesByCriteria(primarySearchCriteria);
 
-        // --- Fallback to Secondary Search ---
-        if (allSignalHireProfiles.length < 400 && convertedIndustries.secondary) {
-          console.log(`Primary SignalHire search returned ${allSignalHireProfiles.length} profiles. Trying secondary industry: "${convertedIndustries.secondary}"`);
+              if (primaryResponse.success && primaryResponse.results && primaryResponse.results.profiles) {
+                let roleProfiles = [...primaryResponse.results.profiles];
 
-          const secondarySearchCriteria = {
-            title: roles[0],
-            location: location,
-            industry: convertedIndustries.secondary,
-            size: 100
-          };
+                // Pagination for this role+industry combination
+                if (primaryResponse.results.scrollId && primaryResponse.results.requestId && (allSignalHireProfiles.length + roleProfiles.length) < 500) {
+                  let currentScrollId = primaryResponse.results.scrollId;
+                  const requestId = primaryResponse.results.requestId;
+                  let page = 1;
 
-          console.log('SignalHire secondary search criteria:', secondarySearchCriteria);
-          const secondarySignalHireResponse = await signalHireService.searchProfilesByCriteria(secondarySearchCriteria);
-          let secondaryProfiles = [];
+                  while (currentScrollId && (allSignalHireProfiles.length + roleProfiles.length) < 500 && page < 50) {
+                    try {
+                      const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
 
-          if (secondarySignalHireResponse.success && secondarySignalHireResponse.results && secondarySignalHireResponse.results.profiles) {
-            secondaryProfiles = [...secondarySignalHireResponse.results.profiles];
+                      if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
+                        roleProfiles = roleProfiles.concat(scrollResponse.results.profiles);
 
-            // Pagination for secondary search
-            if (secondarySignalHireResponse.results.scrollId && secondarySignalHireResponse.results.requestId && (allSignalHireProfiles.length + secondaryProfiles.length) < 500) {
-              let currentScrollId = secondarySignalHireResponse.results.scrollId;
-              const requestId = secondarySignalHireResponse.results.requestId;
-              let page = 1;
-
-              while (currentScrollId && (allSignalHireProfiles.length + secondaryProfiles.length) < 500) {
-                try {
-                  console.log(`Fetching SignalHire secondary page ${page + 1} with scrollId:`, currentScrollId);
-                  const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
-                  if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
-                    const remainingSlots = 500 - (allSignalHireProfiles.length + secondaryProfiles.length);
-                    const profilesToAdd = scrollResponse.results.profiles.slice(0, remainingSlots);
-                    secondaryProfiles = secondaryProfiles.concat(profilesToAdd);
-                    console.log(`Added ${profilesToAdd.length} profiles from secondary page ${page + 1}. Total secondary: ${secondaryProfiles.length}`);
-                    if ((allSignalHireProfiles.length + secondaryProfiles.length) >= 500) {
-                      console.log('Reached 500 total SignalHire profiles limit, stopping pagination');
+                        if (scrollResponse.results.scrollId) {
+                          currentScrollId = scrollResponse.results.scrollId;
+                        } else {
+                          break;
+                        }
+                      } else {
+                        break;
+                      }
+                      page++;
+                    } catch (scrollError) {
+                      console.error(`SignalHire scroll search failed:`, scrollError);
                       break;
                     }
-                    if (scrollResponse.results.scrollId) {
-                      currentScrollId = scrollResponse.results.scrollId;
-                    } else {
-                      console.log('No more scrollId available, reached last page for secondary search');
-                      break;
-                    }
-                  } else {
-                    console.log('No more secondary profiles available or empty response');
-                    break;
                   }
-                  page++;
-                } catch (scrollError) {
-                  console.error(`SignalHire secondary scroll search page ${page + 1} failed:`, scrollError);
-                  break;
                 }
+
+                // Deduplicate and add new profiles
+                const newProfiles = roleProfiles.filter(p => p.uid && !usedUids.has(p.uid));
+                newProfiles.forEach(p => usedUids.add(p.uid));
+
+                const remainingSlots = 500 - allSignalHireProfiles.length;
+                const profilesToAdd = newProfiles.slice(0, remainingSlots);
+                allSignalHireProfiles.push(...profilesToAdd);
+
+                console.log(`Added ${profilesToAdd.length} unique profiles from "${currentRole}" + primary industry. Total: ${allSignalHireProfiles.length}`);
               }
+            } catch (primaryError) {
+              console.error(`Primary search failed for role "${currentRole}":`, primaryError);
             }
           }
 
-          // Combine and deduplicate
-          if (secondaryProfiles.length > 0) {
-            const existingUids = new Set(allSignalHireProfiles.map(p => p.uid));
-            const uniqueSecondaryProfiles = secondaryProfiles.filter(p => p.uid && !existingUids.has(p.uid));
-            allSignalHireProfiles.push(...uniqueSecondaryProfiles);
-            console.log(`Added ${uniqueSecondaryProfiles.length} unique profiles from secondary search. New total: ${allSignalHireProfiles.length}`);
+          // Try secondary industry if we still need more profiles
+          if (convertedIndustries.secondary && allSignalHireProfiles.length < 500) {
+            console.log(`Searching with secondary industry: "${convertedIndustries.secondary}"`);
+
+            const secondarySearchCriteria = {
+              title: currentRole,
+              location: location,
+              industry: convertedIndustries.secondary,
+              size: 100
+            };
+
+            try {
+              const secondaryResponse = await signalHireService.searchProfilesByCriteria(secondarySearchCriteria);
+
+              if (secondaryResponse.success && secondaryResponse.results && secondaryResponse.results.profiles) {
+                let roleProfiles = [...secondaryResponse.results.profiles];
+
+                // Pagination for secondary search
+                if (secondaryResponse.results.scrollId && secondaryResponse.results.requestId && (allSignalHireProfiles.length + roleProfiles.length) < 500) {
+                  let currentScrollId = secondaryResponse.results.scrollId;
+                  const requestId = secondaryResponse.results.requestId;
+                  let page = 1;
+
+                  while (currentScrollId && (allSignalHireProfiles.length + roleProfiles.length) < 500 && page < 50) {
+                    try {
+                      const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
+
+                      if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
+                        roleProfiles = roleProfiles.concat(scrollResponse.results.profiles);
+
+                        if (scrollResponse.results.scrollId) {
+                          currentScrollId = scrollResponse.results.scrollId;
+                        } else {
+                          break;
+                        }
+                      } else {
+                        break;
+                      }
+                      page++;
+                    } catch (scrollError) {
+                      console.error(`SignalHire secondary scroll search failed:`, scrollError);
+                      break;
+                    }
+                  }
+                }
+
+                // Deduplicate and add new profiles
+                const newProfiles = roleProfiles.filter(p => p.uid && !usedUids.has(p.uid));
+                newProfiles.forEach(p => usedUids.add(p.uid));
+
+                const remainingSlots = 500 - allSignalHireProfiles.length;
+                const profilesToAdd = newProfiles.slice(0, remainingSlots);
+                allSignalHireProfiles.push(...profilesToAdd);
+
+                console.log(`Added ${profilesToAdd.length} unique profiles from "${currentRole}" + secondary industry. Total: ${allSignalHireProfiles.length}`);
+              }
+            } catch (secondaryError) {
+              console.error(`Secondary search failed for role "${currentRole}":`, secondaryError);
+            }
+          }
+
+          // Check if we've reached our target
+          if (allSignalHireProfiles.length >= 500) {
+            console.log(`🎯 Reached 500 profile limit with role "${currentRole}"`);
+            break;
           }
         }
+
         // Ensure we don't exceed 500 profiles (safety check)
         if (allSignalHireProfiles.length > 500) {
           allSignalHireProfiles = allSignalHireProfiles.slice(0, 500);
           console.log('Trimmed SignalHire profiles to 500 limit');
         }
-        console.log(`Final SignalHire profiles count: ${allSignalHireProfiles.length}`);
+
+        console.log(`\n🏁 Final SignalHire Results: ${allSignalHireProfiles.length} profiles from ${roles.length} role(s)`);
 
 
         // Convert all SignalHire profiles to our standard format
@@ -765,7 +790,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
           const icypeasSearchCriteria = {
             title: roles[0], // Use first role
             location: location,
-            keywords: convertedIndustry || (industries.length > 0 ? industries[0] : undefined), // Use converted industry if available
+            keywords: convertedIndustries.primary || (industries.length > 0 ? industries[0] : undefined), // Use converted industry if available
             size: icypeasLimit // Maximum IcyPeas results per request
           };
 
@@ -909,6 +934,56 @@ exports.searchLinkedInProfiles = async (req, res) => {
           relevanceScore: 100,
           source: 'contactout'
         }));
+
+        // Filter ContactOut results to only include profiles whose titles match the searched roles
+        if (roles.length > 0) {
+          contactOutResults = contactOutResults.filter(profile => {
+            const profileTitle = (profile.title || '').toLowerCase();
+
+            // Check if any of the searched role terms are included in the profile title
+            return roles.some(role => {
+              const roleLower = role.toLowerCase();
+
+              // For more precise matching, check if the core role words are present
+              // Split both the search role and profile title into words
+              const roleWords = roleLower.split(/\s+/).filter(word =>
+                word.length >= 3 && !['and', 'or', 'the', 'a', 'an', 'of', 'in', 'at', 'to', 'for', 'with'].includes(word)
+              );
+
+              // Check if ALL significant words from the role are present in the title
+              // This ensures "sales representative" doesn't match "sales executive"
+              const allWordsMatch = roleWords.every(word => profileTitle.includes(word));
+
+              if (allWordsMatch) return true;
+
+              // Fallback: if the exact role phrase exists in the title
+              if (profileTitle.includes(roleLower)) return true;
+
+              // Additional check for common role synonyms
+              const roleSynonyms = {
+                'representative': ['rep', 'representative'],
+                'executive': ['executive', 'exec'],
+                'manager': ['manager', 'mgr'],
+                'director': ['director', 'dir'],
+                'specialist': ['specialist', 'spec'],
+                'coordinator': ['coordinator', 'coord'],
+                'analyst': ['analyst'],
+                'engineer': ['engineer', 'eng'],
+                'developer': ['developer', 'dev']
+              };
+
+              // Check for role-specific matching with synonyms
+              for (const [baseRole, synonyms] of Object.entries(roleSynonyms)) {
+                if (roleLower.includes(baseRole)) {
+                  return synonyms.some(synonym => profileTitle.includes(synonym));
+                }
+              }
+
+              return false;
+            });
+          });
+          console.log(`ContactOut results after title filtering: ${contactOutResults.length}`);
+        }
       } catch (contactOutError) {
         console.error('ContactOut search failed:', contactOutError);
         // Continue with other results even if ContactOut fails
@@ -1092,16 +1167,39 @@ exports.searchLinkedInProfiles = async (req, res) => {
                 const ogDesc = result.pagemap?.metatags?.[0]?.['og:description'] || '';
                 const snippet = result.snippet || '';
 
+                const extractAndCleanLocation = (text) => {
+                  // Fixed regex with word boundaries to prevent matching "location" within "relocation"
+                  let locationMatch = text.match(/\b(?:Location|Plats|Ort|Lieu|Ubicación|Standort|Lugar|Localización|Lokasi|Lokasyon|位置|地点|所在地)\b\s*[:：\-–]?\s*([^·\n]+)/i);
+                  if (locationMatch && locationMatch[1]) {
+                    let location = locationMatch[1].trim();
+
+                    // Stop at the first dot to remove LinkedIn boilerplate text
+                    const dotIndex = location.indexOf('.');
+                    if (dotIndex !== -1) {
+                      location = location.substring(0, dotIndex);
+                    }
+
+                    // Remove HTML tags
+                    location = location.replace(/<[^>]*>/g, '');
+
+                    // Clean up extra whitespace  
+                    location = location.trim();
+
+                    return location;
+                  }
+                  return '';
+                };
+
                 // Try og:description first
-                let locationMatch = ogDesc.match(/(?:Location|Plats)\s*[:：]?\s*([^·\n]+)/i);
-                if (locationMatch && locationMatch[1]) {
-                  return locationMatch[1].trim();
+                let cleanedLocation = extractAndCleanLocation(ogDesc);
+                if (cleanedLocation) {
+                  return cleanedLocation;
                 }
 
                 // Fallback to snippet
-                locationMatch = snippet.match(/(?:Location|Plats)\s*[:：]?\s*([^·\n]+)/i);
-                if (locationMatch && locationMatch[1]) {
-                  return locationMatch[1].trim();
+                cleanedLocation = extractAndCleanLocation(snippet);
+                if (cleanedLocation) {
+                  return cleanedLocation;
                 }
 
                 return '';
@@ -1172,16 +1270,39 @@ exports.searchLinkedInProfiles = async (req, res) => {
                 const ogDesc = result.pagemap?.metatags?.[0]?.['og:description'] || '';
                 const snippet = result.snippet || '';
 
+                const extractAndCleanLocation = (text) => {
+                  // Fixed regex with word boundaries to prevent matching "location" within "relocation"
+                  let locationMatch = text.match(/\b(?:Location|Plats|Ort|Lieu|Ubicación|Standort|Lugar|Localización|Lokasi|Lokasyon|位置|地点|所在地)\b\s*[:：\-–]?\s*([^·\n]+)/i);
+                  if (locationMatch && locationMatch[1]) {
+                    let location = locationMatch[1].trim();
+
+                    // Stop at the first dot to remove LinkedIn boilerplate text
+                    const dotIndex = location.indexOf('.');
+                    if (dotIndex !== -1) {
+                      location = location.substring(0, dotIndex);
+                    }
+
+                    // Remove HTML tags
+                    location = location.replace(/<[^>]*>/g, '');
+
+                    // Clean up extra whitespace  
+                    location = location.trim();
+
+                    return location;
+                  }
+                  return '';
+                };
+
                 // Try og:description first
-                let locationMatch = ogDesc.match(/(?:Location|Plats)\s*[:：]?\s*([^·\n]+)/i);
-                if (locationMatch && locationMatch[1]) {
-                  return locationMatch[1].trim();
+                let cleanedLocation = extractAndCleanLocation(ogDesc);
+                if (cleanedLocation) {
+                  return cleanedLocation;
                 }
 
                 // Fallback to snippet
-                locationMatch = snippet.match(/(?:Location|Plats)\s*[:：]?\s*([^·\n]+)/i);
-                if (locationMatch && locationMatch[1]) {
-                  return locationMatch[1].trim();
+                cleanedLocation = extractAndCleanLocation(snippet);
+                if (cleanedLocation) {
+                  return cleanedLocation;
                 }
 
                 return '';
@@ -1240,7 +1361,11 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
     // Add heuristic industry assignment based on filters and profile content
     // Use uniqueIndustryVariations to properly match Brave results that used industry variations
-    const industryFilters = new Set(uniqueIndustryVariations.map(i => i.toLowerCase()));
+    const industryFilters = new Set(
+      uniqueIndustryVariations
+        .filter(i => typeof i === 'string' && i.trim() !== '') // ✅ Filter out non-strings
+        .map(i => i.toLowerCase())
+    );
 
     enrichedResults = enrichedResults.map(result => {
       let extractedIndustry = result.industry || result.extractedIndustry || '';
@@ -1336,9 +1461,12 @@ exports.searchLinkedInProfiles = async (req, res) => {
       // Calculate matched filters by category
       const matchedCategories = calculateMatchedCategories(result, filters, uniqueIndustryVariations, industries);
 
-      // Total categories is 3 (location, title, industry) plus any additional filter types
+      // Total categories: location + title + (industry if provided) + any additional filter types
+      const baseCategories = industries.length > 0 ? 3 : 2; // 3 if industries provided, 2 if not
       const additionalFilterTypes = new Set(otherFilters.map(f => f.field));
-      const totalCategories = 3 + additionalFilterTypes.size;
+      const totalCategories = baseCategories + additionalFilterTypes.size;
+
+      console.log(`Debug: baseCategories=${baseCategories}, additionalFilterTypes=${additionalFilterTypes.size}, totalCategories=${totalCategories}, matched=${matchedCategories.matched}`);
 
       // Calculate the fractional score
       // Use matchedCategoriesValue to determine matched categories based on actual matched values
@@ -1371,10 +1499,58 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
             for (const source of locationSources) {
               if (source && typeof source === 'string') {
-                const normalizedSource = source.toLowerCase().normalize();
-                const normalizedValue = lowercaseValue.normalize();
-                if (normalizedSource === normalizedValue ||
-                  new RegExp(`\\b${normalizedValue}\\b`).test(normalizedSource)) {
+                const normalizedSource = source.toLowerCase();
+                const normalizedValue = lowercaseValue.toLowerCase();
+
+                // Smart location matching with country/region mappings (same as the fixed version)
+                let locationMatched = false;
+
+                // Direct substring match first
+                if (normalizedSource.includes(normalizedValue)) {
+                  locationMatched = true;
+                } else {
+                  // Special mappings for common country/region abbreviations
+                  const locationMappings = {
+                    'us': ['united states', 'usa', 'america', 'u.s.', 'u.s.a'],
+                    'usa': ['united states', 'us', 'america', 'u.s.', 'u.s.a'],
+                    'uk': ['united kingdom', 'britain', 'great britain', 'england', 'scotland', 'wales'],
+                    'uae': ['united arab emirates', 'emirates'],
+                    'ca': ['canada'],
+                    'au': ['australia'],
+                    'de': ['germany', 'deutschland'],
+                    'fr': ['france'],
+                    'in': ['india'],
+                    'cn': ['china'],
+                    'jp': ['japan'],
+                    'br': ['brazil'],
+                    'mx': ['mexico'],
+                    'sg': ['singapore'],
+                    'nl': ['netherlands', 'holland'],
+                    'ch': ['switzerland'],
+                    'at': ['austria'],
+                    'be': ['belgium'],
+                    'dk': ['denmark'],
+                    'fi': ['finland'],
+                    'no': ['norway'],
+                    'se': ['sweden'],
+                    'it': ['italy'],
+                    'es': ['spain'],
+                    'pt': ['portugal'],
+                    'ie': ['ireland'],
+                    'nz': ['new zealand'],
+                    'za': ['south africa']
+                  };
+
+                  // Check if search value has a mapping
+                  if (locationMappings[normalizedValue]) {
+                    const mappedValues = locationMappings[normalizedValue];
+                    locationMatched = mappedValues.some(mappedValue =>
+                      normalizedSource.includes(mappedValue)
+                    );
+                  }
+                }
+
+                if (locationMatched) {
                   valueMatched = true;
                   break;
                 }
@@ -1408,7 +1584,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
               // Check if extracted industry matches any variation that corresponds to the original search industry
               const matchedVariations = uniqueIndustryVariations.filter(variation => {
-                const lowerVariation = variation.toLowerCase();
+                const lowerVariation = typeof variation === 'string' ? variation.toLowerCase() : '';
                 return extractedIndustry.includes(lowerVariation) ||
                   lowerVariation.includes(extractedIndustry) ||
                   extractedIndustry.split(/[,\s]+/).some(word =>
@@ -1538,12 +1714,17 @@ exports.searchLinkedInProfiles = async (req, res) => {
       });
     }
 
-    // Filter results to only include those with 3/3 relevanceScore
-    // const filteredResults = resultsWithFractionalScores;
+    // Filter results to only include those with perfect relevance score
+    // 3/3 when industries are provided, 2/2 when industries are optional
+    const expectedRelevanceScore = industries.length > 0 ? "3/3" : "2/2";
+
+    console.log(`Filtering for relevance score: ${expectedRelevanceScore} (industries provided: ${industries.length > 0})`);
 
     const filteredResults = resultsWithFractionalScores.filter(result =>
-      result.relevanceScore === "3/3"
+      result.relevanceScore === expectedRelevanceScore
     );
+
+    console.log(`Filtered results: ${filteredResults.length}/${resultsWithFractionalScores.length} results with ${expectedRelevanceScore} relevance score`);
 
     // Filter out results with empty links
     const finalResults = filteredResults.filter(result =>
@@ -1559,7 +1740,6 @@ exports.searchLinkedInProfiles = async (req, res) => {
       await usageService.recordSearch(req.user.userId);
     }
 
-    console.log(`Filtered results: ${filteredResults.length}/${resultsWithFractionalScores.length} results with 3/3 relevance score`);
     console.log(`Final results: ${finalResults.length}/${filteredResults.length} results after removing empty LinkedIn URLs`);
 
     res.status(StatusCodes.OK).json({
@@ -1969,9 +2149,71 @@ function calculateMatchedCategories(result, filters, uniqueIndustryVariations = 
       if (fieldType === 'location') {
         // Match location only against extractedLocation, ignore other sources
         if (result.extractedLocation && typeof result.extractedLocation === 'string') {
-          const normalizedExtracted = result.extractedLocation.toLowerCase().normalize();
-          const normalizedValue = lowercaseValue.normalize();
+          const normalizedExtracted = result.extractedLocation.toLowerCase();
+          const normalizedValue = lowercaseValue.toLowerCase();
+
+          // Smart location matching with country/region mappings
+          let locationMatched = false;
+
+          // Direct substring match first
           if (normalizedExtracted.includes(normalizedValue)) {
+            locationMatched = true;
+          } else {
+            // Special mappings for common country/region abbreviations
+            const locationMappings = {
+              'us': ['united states', 'usa', 'america', 'u.s.', 'u.s.a'],
+              'usa': ['united states', 'us', 'america', 'u.s.', 'u.s.a'],
+              'uk': ['united kingdom', 'britain', 'great britain', 'england', 'scotland', 'wales'],
+              'uae': ['united arab emirates', 'emirates'],
+              'ca': ['canada'],
+              'au': ['australia'],
+              'de': ['germany', 'deutschland'],
+              'fr': ['france'],
+              'in': ['india'],
+              'cn': ['china'],
+              'jp': ['japan'],
+              'br': ['brazil'],
+              'mx': ['mexico'],
+              'sg': ['singapore'],
+              'nl': ['netherlands', 'holland'],
+              'ch': ['switzerland'],
+              'at': ['austria'],
+              'be': ['belgium'],
+              'dk': ['denmark'],
+              'fi': ['finland'],
+              'no': ['norway'],
+              'se': ['sweden'],
+              'it': ['italy'],
+              'es': ['spain'],
+              'pt': ['portugal'],
+              'ie': ['ireland'],
+              'nz': ['new zealand'],
+              'za': ['south africa']
+            };
+
+            // Check if search value has a mapping
+            if (locationMappings[normalizedValue]) {
+              const mappedValues = locationMappings[normalizedValue];
+              locationMatched = mappedValues.some(mappedValue =>
+                normalizedExtracted.includes(mappedValue)
+              );
+            }
+
+            // Reverse check: if extracted location contains a country name, 
+            // check if search value maps to it
+            if (!locationMatched) {
+              for (const [abbrev, fullNames] of Object.entries(locationMappings)) {
+                if (fullNames.some(fullName => normalizedExtracted.includes(fullName))) {
+                  if (normalizedValue === abbrev) {
+                    locationMatched = true;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+
+          if (locationMatched) {
             categoryMatched = true;
           }
         }
@@ -2008,7 +2250,7 @@ function calculateMatchedCategories(result, filters, uniqueIndustryVariations = 
           } else if (uniqueIndustryVariations.length > 0) {
             // Check if extracted industry matches any variation in uniqueIndustryVariations
             const matchedVariations = uniqueIndustryVariations.filter(variation => {
-              const lowerVariation = variation.toLowerCase();
+              const lowerVariation = typeof variation === 'string' ? variation.toLowerCase() : '';
               return normalizedExtracted.includes(lowerVariation) ||
                 lowerVariation.includes(normalizedExtracted) ||
                 normalizedExtracted.split(/[,\s]+/).some(word =>
@@ -2817,16 +3059,39 @@ exports.searchBraveLinkedInProfiles = async (req, res) => {
                 const ogDesc = result.pagemap?.metatags?.[0]?.['og:description'] || '';
                 const snippet = result.snippet || '';
 
+                const extractAndCleanLocation = (text) => {
+                  // Fixed regex with word boundaries to prevent matching "location" within "relocation"
+                  let locationMatch = text.match(/\b(?:Location|Plats|Ort|Lieu|Ubicación|Standort|Lugar|Localización|Lokasi|Lokasyon|位置|地点|所在地)\b\s*[:：\-–]?\s*([^·\n]+)/i);
+                  if (locationMatch && locationMatch[1]) {
+                    let location = locationMatch[1].trim();
+
+                    // Stop at the first dot to remove LinkedIn boilerplate text
+                    const dotIndex = location.indexOf('.');
+                    if (dotIndex !== -1) {
+                      location = location.substring(0, dotIndex);
+                    }
+
+                    // Remove HTML tags
+                    location = location.replace(/<[^>]*>/g, '');
+
+                    // Clean up extra whitespace  
+                    location = location.trim();
+
+                    return location;
+                  }
+                  return '';
+                };
+
                 // Try og:description first
-                let locationMatch = ogDesc.match(/(?:Location|Plats)\s*[:：]?\s*([^·\n]+)/i);
-                if (locationMatch && locationMatch[1]) {
-                  return locationMatch[1].trim();
+                let cleanedLocation = extractAndCleanLocation(ogDesc);
+                if (cleanedLocation) {
+                  return cleanedLocation;
                 }
 
                 // Fallback to snippet
-                locationMatch = snippet.match(/(?:Location|Plats)\s*[:：]?\s*([^·\n]+)/i);
-                if (locationMatch && locationMatch[1]) {
-                  return locationMatch[1].trim();
+                cleanedLocation = extractAndCleanLocation(snippet);
+                if (cleanedLocation) {
+                  return cleanedLocation;
                 }
 
                 return '';
@@ -2844,7 +3109,7 @@ exports.searchBraveLinkedInProfiles = async (req, res) => {
     }
 
     // Add heuristic industry assignment based on filters and profile content
-    const industryFilters = new Set(industries.map(i => i.toLowerCase()));
+    const industryFilters = new Set(industries.filter(i => typeof i === 'string' && i.trim() !== '').map(i => i.toLowerCase()));
 
     const enrichedResults = processedResults.map(result => {
       let extractedIndustry = result.industry || result.extractedIndustry || '';
@@ -2939,7 +3204,9 @@ exports.searchBraveLinkedInProfiles = async (req, res) => {
     const resultsWithFractionalScores = enrichedResults.map(result => {
       const matchedCategories = calculateMatchedCategories(result, filters);
       const additionalFilterTypes = new Set(otherFilters.map(f => f.field));
-      const totalCategories = 3 + additionalFilterTypes.size;
+      // Total categories: location + title + (industry if provided) + any additional filter types
+      const baseCategories = industries.length > 0 ? 3 : 2; // 3 if industries provided, 2 if not
+      const totalCategories = baseCategories + additionalFilterTypes.size;
 
       const matchedCategoriesWithValues = {
         matched: 0,
@@ -3037,18 +3304,22 @@ exports.searchBraveLinkedInProfiles = async (req, res) => {
       return b.originalRelevanceScore - a.originalRelevanceScore;
     });
 
-    // Filter results to only include those with 3/3 relevanceScore
+    // Filter results to only include those with perfect relevance score
+    // 3/3 when industries are provided, 2/2 when industries are optional
+    const expectedRelevanceScore = industries.length > 0 ? "3/3" : "2/2";
+
     const filteredResults = resultsWithFractionalScores.filter(result =>
-      result.relevanceScore === "3/3"
+      result.relevanceScore === expectedRelevanceScore
     );
+
+    console.log(`Filtered results: ${filteredResults.length}/${resultsWithFractionalScores.length} results with ${expectedRelevanceScore} relevance score`);
 
     // Filter out results with empty links
     const finalResults = filteredResults.filter(result =>
       result.link && result.link.trim() !== ""
     );
 
-    console.log(`Final filtering: ${filteredResults.length}/${resultsWithFractionalScores.length} results with 3/3 relevance score`);
-    console.log(`Final results: ${finalResults.length}/${filteredResults.length} results after removing empty LinkedIn URLs`);
+    console.log(`Final filtering: ${filteredResults.length}/${resultsWithFractionalScores.length} results with ${expectedRelevanceScore} relevance score`);
 
     res.status(StatusCodes.OK).json({
       results: finalResults,

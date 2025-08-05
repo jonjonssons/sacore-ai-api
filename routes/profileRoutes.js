@@ -1758,7 +1758,7 @@ router.post(
       let completedCount = 0;
       const processedIdentifiers = new Set();
 
-      // --- 1. DIRECT ANALYSIS of enrichedProfiles ---
+      // --- 1. DIRECT ANALYSIS of enrichedProfiles (PARALLEL) ---
       if (directAnalysisCount > 0) {
         res.write(`data: ${JSON.stringify({
           type: 'status',
@@ -1780,50 +1780,87 @@ router.post(
           };
         };
 
-        for (const profile of enrichedProfiles) {
-          const identifier = profile.id || profile.contactOutData?.li_vanity || `enriched_${completedCount}`;
-          if (processedIdentifiers.has(identifier)) continue;
-          processedIdentifiers.add(identifier);
+        // ✅ PARALLEL PROCESSING with batching
+        const ANALYSIS_BATCH_SIZE = 10;
+        const enrichedBatches = [];
 
-          const transformedProfile = transformEnrichedData(profile);
-          if (transformedProfile) {
-            try {
-              const analysisResult = await openaiService.analyzeProfilesBatchAgainstCriteria([transformedProfile], criteria);
-              const profileAnalysis = analysisResult.profiles[0];
-              const breakdown = profileAnalysis.breakdown || [];
-              const score = `${breakdown.filter(c => c.met).length}/${breakdown.length}`;
-              completedCount++;
-              res.write(`data: ${JSON.stringify({
-                type: 'result',
-                identifier: identifier,
-                name: transformedProfile.fullName,
-                enrichedData: profile,
-                analysis: { score, breakdown, description: profileAnalysis.description },
-                status: 'success',
-                progress: { completed: completedCount, total: totalCount }
-              })}\n\n`);
-            } catch (analysisError) {
+        for (let i = 0; i < enrichedProfiles.length; i += ANALYSIS_BATCH_SIZE) {
+          const batch = enrichedProfiles.slice(i, i + ANALYSIS_BATCH_SIZE);
+          enrichedBatches.push(batch);
+        }
+
+        // Process all batches in parallel
+        const batchPromises = enrichedBatches.map(async (batch) => {
+          const validProfiles = [];
+          const profileMapping = [];
+
+          for (const profile of batch) {
+            const identifier = profile.id || profile.contactOutData?.li_vanity || `enriched_${completedCount}`;
+            if (processedIdentifiers.has(identifier)) continue;
+
+            const transformedProfile = transformEnrichedData(profile);
+            if (transformedProfile) {
+              validProfiles.push(transformedProfile);
+              profileMapping.push({ identifier, profile, transformedProfile });
+            } else {
+              // Handle invalid profiles immediately
+              processedIdentifiers.add(identifier);
               completedCount++;
               res.write(`data: ${JSON.stringify({
                 type: 'error',
                 identifier: identifier,
-                error: 'Failed to analyze profile',
-                details: analysisError.message,
+                error: 'Invalid enriched profile format',
                 status: 'failed',
                 progress: { completed: completedCount, total: totalCount }
               })}\n\n`);
             }
-          } else {
-            completedCount++;
-            res.write(`data: ${JSON.stringify({
-              type: 'error',
-              identifier: identifier,
-              error: 'Invalid enriched profile format',
-              status: 'failed',
-              progress: { completed: completedCount, total: totalCount }
-            })}\n\n`);
           }
-        }
+
+          if (validProfiles.length > 0) {
+            try {
+              // ✅ BATCH OpenAI call instead of individual calls
+              const analysisResult = await openaiService.analyzeProfilesBatchAgainstCriteria(validProfiles, criteria);
+
+              // Process results and stream them
+              analysisResult.profiles.forEach((profileAnalysis, idx) => {
+                const mapping = profileMapping[idx];
+                if (mapping) {
+                  const { identifier, profile } = mapping;
+                  processedIdentifiers.add(identifier);
+                  const breakdown = profileAnalysis.breakdown || [];
+                  const score = `${breakdown.filter(c => c.met).length}/${breakdown.length}`;
+                  completedCount++;
+
+                  res.write(`data: ${JSON.stringify({
+                    type: 'result',
+                    identifier: identifier,
+                    name: mapping.transformedProfile.fullName,
+                    enrichedData: profile,
+                    analysis: { score, breakdown, description: profileAnalysis.description },
+                    status: 'success',
+                    progress: { completed: completedCount, total: totalCount }
+                  })}\n\n`);
+                }
+              });
+            } catch (analysisError) {
+              // Handle batch analysis error
+              profileMapping.forEach(({ identifier }) => {
+                processedIdentifiers.add(identifier);
+                completedCount++;
+                res.write(`data: ${JSON.stringify({
+                  type: 'error',
+                  identifier: identifier,
+                  error: 'Failed to analyze profile',
+                  details: analysisError.message,
+                  status: 'failed',
+                  progress: { completed: completedCount, total: totalCount }
+                })}\n\n`);
+              });
+            }
+          }
+        });
+
+        await Promise.all(batchPromises);
       }
 
       // --- 2. ENRICHMENT + ANALYSIS ---
@@ -1863,9 +1900,9 @@ router.post(
           }
         };
 
-        for (const doc of [...existingByUrls, ...existingByIds]) {
-          await processExistingProfile(doc);
-        }
+        // ✅ PARALLEL processing of existing profiles
+        const existingProfilePromises = [...existingByUrls, ...existingByIds].map(doc => processExistingProfile(doc));
+        await Promise.all(existingProfilePromises);
 
         const urlsToEnrich = normalizedUrls.filter(url => !processedIdentifiers.has(url));
         const idsToEnrich = profileIds.filter(id => !processedIdentifiers.has(id));
@@ -2043,7 +2080,7 @@ router.post(
           await Promise.all(batchPromises);
 
           // Polling logic for newly requested profiles
-          const maxWaitTime = 120000;
+          const maxWaitTime = 180000;
           const pollInterval = 3000;
           const startTime = Date.now();
 
@@ -2055,13 +2092,148 @@ router.post(
               ]
             });
 
-            for (const profileDoc of availableProfiles) {
-              const identifier = profileDoc.linkedinUrl || profileDoc.profileId;
-              if (processedIdentifiers.has(identifier)) continue;
-              await processExistingProfile(profileDoc); // Reuse the same processing logic
-            }
+            // ✅ PARALLEL processing in polling loop
+            const pollingPromises = availableProfiles
+              .filter(profileDoc => {
+                const identifier = profileDoc.linkedinUrl || profileDoc.profileId;
+                return !processedIdentifiers.has(identifier);
+              })
+              .map(profileDoc => processExistingProfile(profileDoc));
+
+            await Promise.all(pollingPromises);
             if (completedCount < totalCount) {
               await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+          }
+        }
+      }
+
+      // ✅ HANDLE PROFILES STUCK IN "PENDING" OR "IN_PROGRESS" STATUS  
+      if (enrichmentCount > 0) {
+        console.log('🔍 Checking for profiles stuck in pending or in_progress status...');
+
+        // Define variables for stuck profiles detection
+        const normalizedUrls = linkedinUrls.map(normalizeLinkedinUrl);
+
+        // Find profiles stuck in pending (webhook never arrived) or in_progress (final webhook missing)
+        const stuckProfiles = await ProfileRequest.find({
+          $or: [
+            { linkedinUrl: { $in: normalizedUrls }, $or: [{ status: 'pending' }, { status: 'in_progress' }] },
+            { profileId: { $in: profileIds }, $or: [{ status: 'pending' }, { status: 'in_progress' }] }
+          ]
+        });
+
+        console.log(`⚠️ Found ${stuckProfiles.length} profiles stuck in pending/in_progress status`);
+
+        if (stuckProfiles.length > 0) {
+          // Separate stuck profiles by type
+          const stuckUrls = stuckProfiles.filter(p => p.linkedinUrl).map(p => p.linkedinUrl);
+          const stuckIds = stuckProfiles.filter(p => p.profileId).map(p => p.profileId);
+
+          console.log(`🔄 Re-requesting ${stuckUrls.length} URLs and ${stuckIds.length} profile IDs from SignalHire...`);
+
+          // Re-request stuck profiles from SignalHire to trigger webhooks
+          const callbackUrl = `${process.env.API_BASE_URL}/api/callback/signalhire`;
+          const retryPromises = [];
+
+          if (stuckUrls.length > 0) {
+            retryPromises.push(
+              signalHireService.searchProfiles(stuckUrls, callbackUrl, {}, false)
+                .catch(error => console.error('❌ Failed to re-request URLs:', error.message))
+            );
+          }
+
+          if (stuckIds.length > 0) {
+            retryPromises.push(
+              signalHireService.searchProfiles(stuckIds, callbackUrl, {}, false)
+                .catch(error => console.error('❌ Failed to re-request profile IDs:', error.message))
+            );
+          }
+
+          // Send all retry requests
+          await Promise.allSettled(retryPromises);
+
+          // Give SignalHire webhooks time to arrive (30 seconds)
+          console.log('⏳ Waiting 30 seconds for SignalHire webhooks after retry...');
+          await new Promise(resolve => setTimeout(resolve, 30000));
+
+          // Check if any stuck profiles got updated
+          const updatedProfiles = await ProfileRequest.find({
+            $or: [
+              { linkedinUrl: { $in: stuckUrls }, status: 'success' },
+              { profileId: { $in: stuckIds }, status: 'success' }
+            ]
+          });
+
+          // Process any newly updated profiles
+          if (updatedProfiles.length > 0) {
+            console.log(`✅ ${updatedProfiles.length} stuck profiles were successfully updated by retry!`);
+
+            for (const profileDoc of updatedProfiles) {
+              const identifier = profileDoc.linkedinUrl || profileDoc.profileId;
+              if (!processedIdentifiers.has(identifier)) {
+                processedIdentifiers.add(identifier);
+
+                try {
+                  const analysisResult = await openaiService.analyzeProfilesBatchAgainstCriteria([JSON.parse(JSON.stringify(profileDoc.data))], criteria);
+                  const profileAnalysis = analysisResult.profiles[0];
+                  const breakdown = profileAnalysis.breakdown || [];
+                  const score = `${breakdown.filter(c => c.met).length}/${breakdown.length}`;
+                  completedCount++;
+
+                  res.write(`data: ${JSON.stringify({
+                    type: 'result',
+                    identifier: identifier,
+                    name: profileDoc.data?.fullName || '',
+                    enrichedData: profileDoc.data,
+                    analysis: { score, breakdown, description: profileAnalysis.description },
+                    status: 'success',
+                    progress: { completed: completedCount, total: totalCount }
+                  })}\n\n`);
+
+                  console.log(`🔄 Recovered stuck profile: ${identifier}`);
+                } catch (analysisError) {
+                  completedCount++;
+                  res.write(`data: ${JSON.stringify({
+                    type: 'error',
+                    identifier: identifier,
+                    error: 'Failed to analyze recovered profile',
+                    details: analysisError.message,
+                    status: 'failed',
+                    progress: { completed: completedCount, total: totalCount }
+                  })}\n\n`);
+                }
+              }
+            }
+          }
+
+          // Mark remaining stuck profiles as webhook failed
+          const stillStuckProfiles = await ProfileRequest.find({
+            $or: [
+              { linkedinUrl: { $in: stuckUrls }, $or: [{ status: 'pending' }, { status: 'in_progress' }] },
+              { profileId: { $in: stuckIds }, $or: [{ status: 'pending' }, { status: 'in_progress' }] }
+            ]
+          });
+
+          for (const profileDoc of stillStuckProfiles) {
+            const identifier = profileDoc.linkedinUrl || profileDoc.profileId;
+            if (!processedIdentifiers.has(identifier)) {
+              processedIdentifiers.add(identifier);
+              completedCount++;
+
+              const errorMessage = profileDoc.status === 'pending'
+                ? 'SignalHire webhook never arrived - profile stuck in pending status'
+                : 'SignalHire final webhook missing - profile stuck in in_progress status';
+
+              res.write(`data: ${JSON.stringify({
+                type: 'error',
+                identifier: identifier,
+                error: errorMessage,
+                status: 'webhook_failed',
+                progress: { completed: completedCount, total: totalCount }
+              })}\n\n`);
+
+              console.log(`❌ Marked stuck profile as failed: ${identifier} (${profileDoc.status})`);
             }
           }
         }
@@ -2315,6 +2487,658 @@ router.post('/enrich-profile', authenticateUser, checkCredits, profileController
 router.post('/batch-enrich-profiles', authenticateUser, checkCredits, profileController.batchEnrichProfiles);
 router.get('/profile-by-url/:encodedUrl', authenticateUser, profileController.getProfile);
 router.post('/evaluate-profile', authenticateUser, checkCredits, profileController.evaluateProfile);
+
+// Add streaming endpoint for getting LinkedIn URLs
+router.post(
+  '/get-linkedin-urls-stream',
+  authenticateUser,
+  checkCredits,
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { profileIds = [] } = req.body;
+
+      // Check that at least one profileId is provided
+      if (profileIds.length === 0) {
+        return res.status(400).json({
+          error: 'At least one profileId must be provided'
+        });
+      }
+
+      // Consume credits for the operation - consume for all profiles regardless of existing data
+      await creditService.consumeCredits(
+        req.user.userId,
+        `GET LINKEDIN URLS STREAM FOR ${profileIds.length} PROFILES`,
+        profileIds.length
+      );
+
+      // Set up Server-Sent Events
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+      });
+
+      // Send initial status
+      res.write(`data: ${JSON.stringify({
+        type: 'status',
+        message: 'Starting LinkedIn URL extraction...',
+        total: profileIds.length,
+        completed: 0
+      })}\n\n`);
+
+      // Find already enriched profiles by IDs (check ALL completion statuses)
+      const existingByIds = await ProfileRequest.find({
+        profileId: { $in: profileIds },
+        $or: [
+          { status: 'success' },
+          { status: 'completed' },
+          { status: 'no_results' },
+          { status: 'failed' }
+        ]
+      });
+
+      // For get-linkedin-urls, we need profiles with LinkedIn URL in social data
+      const existingIdsWithLinkedIn = new Set();
+      const existingProfilesMap = new Map();
+
+      existingByIds.forEach(profile => {
+        if (profile.data && profile.data.social && Array.isArray(profile.data.social)) {
+          const hasLinkedIn = profile.data.social.some(social =>
+            (social.type === 'li' || social.type === 'linkedin') && social.link
+          );
+          if (hasLinkedIn) {
+            existingIdsWithLinkedIn.add(profile.profileId);
+            existingProfilesMap.set(profile.profileId, profile);
+          }
+        }
+      });
+
+      // Process existing profiles first
+      let completedCount = 0;
+      for (const profileId of profileIds) {
+        if (existingIdsWithLinkedIn.has(profileId)) {
+          const profile = existingProfilesMap.get(profileId);
+          const linkedinSocial = profile.data.social.find(social =>
+            (social.type === 'li' || social.type === 'linkedin') && social.link
+          );
+
+          const result = {
+            profileId: profileId,
+            linkedinUrl: linkedinSocial ? linkedinSocial.link : null,
+            fullName: profile.data?.fullName || null,
+            status: linkedinSocial ? 'success' : 'no_linkedin_url_found'
+          };
+
+          // Send the result
+          res.write(`data: ${JSON.stringify({
+            type: 'result',
+            data: result,
+            completed: ++completedCount,
+            total: profileIds.length
+          })}\n\n`);
+
+          // ✅ Flush response immediately to prevent buffering
+          if (res.flush) res.flush();
+
+          console.log(`✅ Existing profile ${completedCount}/${profileIds.length}: ${profileId} (${result.status})`);
+
+          // Small delay to prevent overwhelming the client
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      // Filter IDs that need enrichment (those without existing LinkedIn data)
+      const idsToEnrich = profileIds.filter(id => !existingIdsWithLinkedIn.has(id));
+      const processedIdentifiers = new Set();
+
+      if (idsToEnrich.length > 0) {
+        const callbackUrl = `${process.env.API_BASE_URL}/api/callback/signalhire`;
+        const BATCH_SIZE = 10;
+
+        // STEP 1: Send all batches to SignalHire first (no waiting)
+        console.log(`📤 Sending ${idsToEnrich.length} profiles to SignalHire in batches...`);
+
+        for (let i = 0; i < idsToEnrich.length; i += BATCH_SIZE) {
+          const batchIds = idsToEnrich.slice(i, i + BATCH_SIZE);
+
+          try {
+            // Create ProfileRequests for the batch
+            await Promise.all(batchIds.map(async (profileId) => {
+              const uniqueRequestId = uuidv4();
+              return await ProfileRequest.create({
+                requestId: uniqueRequestId,
+                profileId,
+                status: 'pending',
+                createdAt: new Date()
+              });
+            }));
+
+            // Send batch to SignalHire (no waiting)
+            await signalHireService.searchProfiles(batchIds, callbackUrl, {}, false);
+            console.log(`📤 Sent batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(idsToEnrich.length / BATCH_SIZE)} to SignalHire`);
+
+          } catch (error) {
+            console.error('Error sending batch to SignalHire:', error);
+          }
+        }
+
+        // STEP 2: Poll for ALL profiles globally (much more efficient)
+        console.log(`⏱️ Polling for results from ${idsToEnrich.length} profiles...`);
+
+        const maxWaitTime = 180000; // 3 minutes total
+        const pollInterval = 3000; // 3 seconds
+        const startTime = Date.now();
+
+        while (completedCount < profileIds.length && (Date.now() - startTime < maxWaitTime)) {
+          // Query for ALL profiles at once (not per-batch)
+          // Query for ALL processed profiles (success, completed, or no results)
+          const availableProfiles = await ProfileRequest.find({
+            profileId: { $in: idsToEnrich },
+            $or: [
+              { status: 'success' },
+              { status: 'completed' },
+              { status: 'no_results' },
+              { status: 'failed' }  // Also include failed ones to stop waiting
+            ]
+          });
+
+          // Process any newly available profiles
+          for (const profileDoc of availableProfiles) {
+            if (!processedIdentifiers.has(profileDoc.profileId)) {
+              processedIdentifiers.add(profileDoc.profileId);
+
+              // Extract LinkedIn URL from social links
+              let linkedinUrl = null;
+              if (profileDoc.data?.social && Array.isArray(profileDoc.data.social)) {
+                const linkedinSocial = profileDoc.data.social.find(social =>
+                  (social.type === 'li' || social.type === 'linkedin') && social.link
+                );
+                if (linkedinSocial && linkedinSocial.link) {
+                  linkedinUrl = linkedinSocial.link;
+                }
+              }
+
+              const result = {
+                profileId: profileDoc.profileId,
+                linkedinUrl: linkedinUrl,
+                fullName: profileDoc.data?.fullName || null,
+                status: linkedinUrl ? 'success' : 'no_linkedin_url_found'
+              };
+
+              // Send the result
+              res.write(`data: ${JSON.stringify({
+                type: 'result',
+                data: result,
+                completed: ++completedCount,
+                total: profileIds.length
+              })}\n\n`);
+
+              // ✅ Flush response immediately to prevent buffering
+              if (res.flush) res.flush();
+
+              console.log(`✅ Existing profile ${completedCount}/${profileIds.length}: ${profileDoc.profileId} (${result.status})`);
+
+              // Small delay to prevent overwhelming the client
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
+
+          // Continue polling if not all profiles are done
+          if (completedCount < profileIds.length) {
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+          }
+        }
+
+        // ✅ STEP 3: HANDLE PROFILES STUCK IN "PENDING" OR "IN_PROGRESS" STATUS
+        if (idsToEnrich.length > 0) {
+          const stuckProfiles = await ProfileRequest.find({
+            profileId: { $in: idsToEnrich },
+            status: { $in: ['pending', 'in_progress'] }
+          });
+
+          if (stuckProfiles.length > 0) {
+            console.log(`🔄 Found ${stuckProfiles.length} stuck profiles, retrying with SignalHire...`);
+
+            res.write(`data: ${JSON.stringify({
+              type: 'retry_status',
+              message: `Retrying ${stuckProfiles.length} stuck profiles...`
+            })}\n\n`);
+
+            // Re-request stuck profiles from SignalHire
+            const retryPromises = stuckProfiles.map(async (profile) => {
+              try {
+                console.log(`🔄 Retrying stuck profile: ${profile.profileId}`);
+                return await signalHireService.searchProfiles([profile.profileId], callbackUrl);
+              } catch (error) {
+                console.error(`❌ Retry failed for profile ${profile.profileId}:`, error.message);
+                return null;
+              }
+            });
+
+            await Promise.allSettled(retryPromises);
+            console.log(`⏳ Waiting 30 seconds for webhooks after retrying stuck profiles...`);
+            await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30s for webhooks
+
+            // Check for updated profiles after retry
+            const updatedProfiles = await ProfileRequest.find({
+              profileId: { $in: stuckProfiles.map(p => p.profileId) },
+              $or: [
+                { status: 'success' },
+                { status: 'completed' },
+                { status: 'no_results' },
+                { status: 'failed' }
+              ]
+            });
+
+            // Process recovered profiles
+            for (const profileDoc of updatedProfiles) {
+              if (!processedIdentifiers.has(profileDoc.profileId)) {
+                processedIdentifiers.add(profileDoc.profileId);
+                completedCount++;
+
+                // Extract LinkedIn URL from social links
+                let linkedinUrl = null;
+                if (profileDoc.data?.social && Array.isArray(profileDoc.data.social)) {
+                  const linkedinSocial = profileDoc.data.social.find(social =>
+                    (social.type === 'li' || social.type === 'linkedin') && social.link
+                  );
+                  if (linkedinSocial && linkedinSocial.link) {
+                    linkedinUrl = linkedinSocial.link;
+                  }
+                }
+
+                const result = {
+                  profileId: profileDoc.profileId,
+                  linkedinUrl: linkedinUrl,
+                  fullName: profileDoc.data?.fullName || null,
+                  status: linkedinUrl ? 'success' : 'no_linkedin_url_found'
+                };
+
+                res.write(`data: ${JSON.stringify({
+                  type: 'result',
+                  data: result,
+                  completed: completedCount,
+                  total: profileIds.length
+                })}\n\n`);
+
+                // ✅ Flush response immediately to prevent buffering
+                if (res.flush) res.flush();
+
+                console.log(`✅ Existing profile ${completedCount}/${profileIds.length}: ${profileDoc.profileId} (${result.status})`);
+
+                // Small delay to prevent overwhelming the client
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+            }
+
+            // Mark still-stuck profiles as no LinkedIn URL found
+            const stillStuckProfiles = await ProfileRequest.find({
+              profileId: { $in: stuckProfiles.map(p => p.profileId) },
+              status: { $in: ['pending', 'in_progress'] }
+            });
+
+            for (const profileDoc of stillStuckProfiles) {
+              if (!processedIdentifiers.has(profileDoc.profileId)) {
+                processedIdentifiers.add(profileDoc.profileId);
+                completedCount++;
+
+                // Update the profile status to failed due to webhook failure
+                await ProfileRequest.findByIdAndUpdate(profileDoc._id, {
+                  status: 'webhook_failed',
+                  updatedAt: new Date()
+                });
+
+                const result = {
+                  profileId: profileDoc.profileId,
+                  linkedinUrl: null,
+                  fullName: null,
+                  status: 'no_linkedin_url_found'
+                };
+
+                res.write(`data: ${JSON.stringify({
+                  type: 'result',
+                  data: result,
+                  completed: completedCount,
+                  total: profileIds.length
+                })}\n\n`);
+
+                // ✅ Flush response immediately to prevent buffering
+                if (res.flush) res.flush();
+
+                console.log(`❌ Still stuck profile marked as no LinkedIn URL: ${profileDoc.profileId}`);
+              }
+            }
+          }
+        }
+
+        // STEP 4: Handle any remaining profiles - check if they exist in DB before marking as timed out
+        const remainingProfileIds = idsToEnrich.filter(id => !processedIdentifiers.has(id));
+
+        if (remainingProfileIds.length > 0) {
+          // Check if remaining profiles exist in database with any completion status
+          const remainingProfilesInDB = await ProfileRequest.find({
+            profileId: { $in: remainingProfileIds },
+            $or: [
+              { status: 'success' },
+              { status: 'completed' },
+              { status: 'no_results' },
+              { status: 'failed' }
+            ]
+          });
+
+          // Process profiles that exist in DB
+          const foundProfileIds = new Set();
+          for (const profileDoc of remainingProfilesInDB) {
+            foundProfileIds.add(profileDoc.profileId);
+            completedCount++;
+
+            // Extract LinkedIn URL from social links
+            let linkedinUrl = null;
+            if (profileDoc.data?.social && Array.isArray(profileDoc.data.social)) {
+              const linkedinSocial = profileDoc.data.social.find(social =>
+                (social.type === 'li' || social.type === 'linkedin') && social.link
+              );
+              if (linkedinSocial && linkedinSocial.link) {
+                linkedinUrl = linkedinSocial.link;
+              }
+            }
+
+            const result = {
+              profileId: profileDoc.profileId,
+              linkedinUrl: linkedinUrl,
+              fullName: profileDoc.data?.fullName || null,
+              status: linkedinUrl ? 'success' : 'no_linkedin_url_found'
+            };
+
+            res.write(`data: ${JSON.stringify({
+              type: 'result',
+              data: result,
+              completed: completedCount,
+              total: profileIds.length
+            })}\n\n`);
+
+            // ✅ Flush response immediately to prevent buffering
+            if (res.flush) res.flush();
+
+            console.log(`✅ Existing profile ${completedCount}/${profileIds.length}: ${profileDoc.profileId} (${result.status})`);
+
+            // Small delay to prevent overwhelming the client
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+
+          // Only mark as truly timed out those that don't exist in DB at all
+          for (const profileId of remainingProfileIds) {
+            if (!foundProfileIds.has(profileId)) {
+              completedCount++;
+
+              const result = {
+                profileId: profileId,
+                linkedinUrl: null,
+                fullName: null,
+                error: 'Profile enrichment timed out',
+                status: 'failed'
+              };
+
+              res.write(`data: ${JSON.stringify({
+                type: 'result',
+                data: result,
+                completed: completedCount,
+                total: profileIds.length
+              })}\n\n`);
+
+              // ✅ Flush response immediately to prevent buffering
+              if (res.flush) res.flush();
+            }
+          }
+        }
+      }
+
+      // ✅ STEP 3: HANDLE PROFILES STUCK IN "PENDING" OR "IN_PROGRESS" STATUS
+      if (idsToEnrich.length > 0) {
+        const stuckProfiles = await ProfileRequest.find({
+          profileId: { $in: idsToEnrich },
+          status: { $in: ['pending', 'in_progress'] }
+        });
+
+        if (stuckProfiles.length > 0) {
+          console.log(`🔄 Found ${stuckProfiles.length} stuck profiles, retrying with SignalHire...`);
+
+          res.write(`data: ${JSON.stringify({
+            type: 'retry_status',
+            message: `Retrying ${stuckProfiles.length} stuck profiles...`
+          })}\n\n`);
+
+          // Re-request stuck profiles from SignalHire
+          const retryPromises = stuckProfiles.map(async (profile) => {
+            try {
+              console.log(`🔄 Retrying stuck profile: ${profile.profileId}`);
+              return await signalHireService.searchProfiles([profile.profileId]);
+            } catch (error) {
+              console.error(`❌ Retry failed for profile ${profile.profileId}:`, error.message);
+              return null;
+            }
+          });
+
+          await Promise.allSettled(retryPromises);
+          console.log(`⏳ Waiting 30 seconds for webhooks after retrying stuck profiles...`);
+          await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30s for webhooks
+
+          // Check for updated profiles after retry
+          const updatedProfiles = await ProfileRequest.find({
+            profileId: { $in: stuckProfiles.map(p => p.profileId) },
+            $or: [
+              { status: 'success' },
+              { status: 'completed' },
+              { status: 'no_results' },
+              { status: 'failed' }
+            ]
+          });
+
+          // Process recovered profiles
+          for (const profileDoc of updatedProfiles) {
+            if (!processedIdentifiers.has(profileDoc.profileId)) {
+              processedIdentifiers.add(profileDoc.profileId);
+              completedCount++;
+
+              // Extract LinkedIn URL from social links
+              let linkedinUrl = null;
+              if (profileDoc.data?.social && Array.isArray(profileDoc.data.social)) {
+                const linkedinSocial = profileDoc.data.social.find(social =>
+                  (social.type === 'li' || social.type === 'linkedin') && social.link
+                );
+                if (linkedinSocial && linkedinSocial.link) {
+                  linkedinUrl = linkedinSocial.link;
+                }
+              }
+
+              const result = {
+                profileId: profileDoc.profileId,
+                linkedinUrl: linkedinUrl,
+                fullName: profileDoc.data?.fullName || null,
+                status: linkedinUrl ? 'success' : 'no_linkedin_url_found'
+              };
+
+              res.write(`data: ${JSON.stringify({
+                type: 'result',
+                data: result,
+                completed: completedCount,
+                total: profileIds.length
+              })}\n\n`);
+
+              // ✅ Flush response immediately to prevent buffering
+              if (res.flush) res.flush();
+
+              console.log(`✅ Existing profile ${completedCount}/${profileIds.length}: ${profileDoc.profileId} (${result.status})`);
+
+              // Small delay to prevent overwhelming the client
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          }
+
+          // Mark still-stuck profiles as no LinkedIn URL found
+          const stillStuckProfiles = await ProfileRequest.find({
+            profileId: { $in: stuckProfiles.map(p => p.profileId) },
+            status: { $in: ['pending', 'in_progress'] }
+          });
+
+          for (const profileDoc of stillStuckProfiles) {
+            if (!processedIdentifiers.has(profileDoc.profileId)) {
+              processedIdentifiers.add(profileDoc.profileId);
+              completedCount++;
+
+              // Update the profile status to failed due to webhook failure
+              await ProfileRequest.findByIdAndUpdate(profileDoc._id, {
+                status: 'webhook_failed',
+                updatedAt: new Date()
+              });
+
+              const result = {
+                profileId: profileDoc.profileId,
+                linkedinUrl: null,
+                fullName: null,
+                status: 'no_linkedin_url_found'
+              };
+
+              res.write(`data: ${JSON.stringify({
+                type: 'result',
+                data: result,
+                completed: completedCount,
+                total: profileIds.length
+              })}\n\n`);
+
+              // ✅ Flush response immediately to prevent buffering
+              if (res.flush) res.flush();
+
+              console.log(`❌ Still stuck profile marked as no LinkedIn URL: ${profileDoc.profileId}`);
+            }
+          }
+        }
+      }
+
+      // STEP 4: Handle any remaining profiles - check if they exist in DB before marking as timed out
+      const remainingProfileIds = idsToEnrich.filter(id => !processedIdentifiers.has(id));
+
+      if (remainingProfileIds.length > 0) {
+        // Check if remaining profiles exist in database with any completion status
+        const remainingProfilesInDB = await ProfileRequest.find({
+          profileId: { $in: remainingProfileIds },
+          $or: [
+            { status: 'success' },
+            { status: 'completed' },
+            { status: 'no_results' },
+            { status: 'failed' }
+          ]
+        });
+
+        // Process profiles that exist in DB
+        const foundProfileIds = new Set();
+        for (const profileDoc of remainingProfilesInDB) {
+          foundProfileIds.add(profileDoc.profileId);
+          completedCount++;
+
+          // Extract LinkedIn URL from social links
+          let linkedinUrl = null;
+          if (profileDoc.data?.social && Array.isArray(profileDoc.data.social)) {
+            const linkedinSocial = profileDoc.data.social.find(social =>
+              (social.type === 'li' || social.type === 'linkedin') && social.link
+            );
+            if (linkedinSocial && linkedinSocial.link) {
+              linkedinUrl = linkedinSocial.link;
+            }
+          }
+
+          const result = {
+            profileId: profileDoc.profileId,
+            linkedinUrl: linkedinUrl,
+            fullName: profileDoc.data?.fullName || null,
+            status: linkedinUrl ? 'success' : 'no_linkedin_url_found'
+          };
+
+          res.write(`data: ${JSON.stringify({
+            type: 'result',
+            data: result,
+            completed: completedCount,
+            total: profileIds.length
+          })}\n\n`);
+
+          // ✅ Flush response immediately to prevent buffering
+          if (res.flush) res.flush();
+
+          console.log(`✅ Existing profile ${completedCount}/${profileIds.length}: ${profileDoc.profileId} (${result.status})`);
+
+          // Small delay to prevent overwhelming the client
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        // Only mark as truly timed out those that don't exist in DB at all
+        for (const profileId of remainingProfileIds) {
+          if (!foundProfileIds.has(profileId)) {
+            completedCount++;
+
+            const result = {
+              profileId: profileId,
+              linkedinUrl: null,
+              fullName: null,
+              error: 'Profile enrichment timed out',
+              status: 'failed'
+            };
+
+            res.write(`data: ${JSON.stringify({
+              type: 'result',
+              data: result,
+              completed: completedCount,
+              total: profileIds.length
+            })}\n\n`);
+
+            // ✅ Flush response immediately to prevent buffering
+            if (res.flush) res.flush();
+          }
+        }
+      }
+
+      // ✅ ADD debug logging before completion
+      console.log(`🏁 Sending completion message: ${completedCount}/${profileIds.length} processed`);
+
+      // Small delay to ensure all responses are flushed
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Send completion message
+      res.write(`data: ${JSON.stringify({
+        type: 'complete',
+        message: 'LinkedIn URL extraction complete',
+        totalProcessed: completedCount
+      })}\n\n`);
+
+      // ✅ ADD flush before ending
+      if (res.flush) res.flush();
+      res.end();
+
+    } catch (error) {
+      console.error('Error in /get-linkedin-urls-stream:', error);
+      if (!res.headersSent) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to start LinkedIn URL extraction stream',
+          details: error.message
+        });
+      } else {
+        res.write(`data: ${JSON.stringify({
+          type: 'error',
+          message: 'Stream failed',
+          error: error.message
+        })}\n\n`);
+        res.end();
+      }
+    }
+  }
+);
 
 module.exports = router;
 

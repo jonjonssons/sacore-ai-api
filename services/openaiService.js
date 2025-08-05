@@ -354,18 +354,25 @@ exports.extractProfilesDataBatch = async (profiles, industries = [], titleFilter
     };
 
     // Extract location from og:description for each profile if available
+    const cleanUpSnippet = (text = '') =>
+      text.replace(/Skip to main content\s*/i, '').trim();
+
     const profilesWithLocation = profiles.map(profile => {
-      const ogDesc = (
-        profile?.pagemap?.metatags?.find(tag => tag['og:description'])?.['og:description']
-      ) || '';
-      const snippet = profile.snippet || '';
-      const locationFromDescription = extractLocationFromDescription(ogDesc, snippet);
+      const rawOgDesc = profile?.pagemap?.metatags?.find(tag => tag['og:description'])?.['og:description'] || '';
+      const rawSnippet = profile.snippet || '';
+
+      const cleanedOgDesc = cleanUpSnippet(rawOgDesc);
+      const cleanedSnippet = cleanUpSnippet(rawSnippet);
+
+      const locationFromDescription = extractLocationFromDescription(cleanedOgDesc, cleanedSnippet);
 
       return {
         ...profile,
+        snippet: cleanedSnippet,
         _extractedLocation: locationFromDescription
       };
     });
+
 
     // Prepare profiles content
     const profilesContent = profilesWithLocation.map((profile, index) => {
@@ -420,17 +427,20 @@ Instructions:
    - If you can't determine a clear title, return an empty string
 
 6. For the industry:
-   - First, try to match with one of the target industries: ${industriesString} using reasoning.
+   - ${industries.length > 0 ?
+        `First, try to match with one of the target industries: ${industriesString} using reasoning.
+   - If a clear match is found with the target industries, use that industry
+   - If no clear match is found with target industries, infer the actual industry by:` :
+        `Identify and extract the actual industry this person works in by:`}
    - Consider:
-    - The person's job title (e.g., "Product Manager" → "software")
-    - Keywords or context in the snippet (e.g., "cloud platform", "banking systems", "e-commerce")
-    - The nature of the current employer if recognizable (e.g., "Shopify" → "e-commerce")
-    - If a clear match is found with the target industries, use that industry
-    - If no clear match is found with target industries, infer the actual industry by:
+    - The person's job title (e.g., "Product Manager" → "Technology/Software")
+    - Always ignore the phrase "Skip to main content LinkedIn" and any similar navigation or accessibility labels — they are never part of the job, company, or industry.
+    - Keywords or context in the snippet (e.g., "cloud platform" → "Technology", "banking systems" → "Financial Services", "e-commerce" → "Retail/E-commerce")
+    - The nature of the current employer if recognizable (e.g., "Shopify" → "E-commerce", "Goldman Sachs" → "Financial Services")
     - Looking at the language in their description
     - Reasoning about the employer's domain
     - Using general knowledge about the company or role
-    - Return the best-fitting industry. If no clear industry is supported, return an empty string ""
+    - Return the best-fitting industry. ${industries.length > 0 ? 'If no clear industry is supported, return an empty string ""' : 'Always try to identify an industry - only return empty string if absolutely no industry can be determined from the available information'}
 
 7. Return a JSON array called "profiles" with one object per profile in the same order as input.
 8. Return valid JSON only - no additional text or explanations.
@@ -1349,150 +1359,123 @@ Examples:
 // Generate industry variations for search queries
 exports.generateIndustryVariations = async (industry, searchEngine = 'google') => {
   try {
-    if (!OPENAI_API_KEY) {
-      throw new Error('OpenAI API key is not configured');
-    }
-
-    if (!isValidOpenAIKey(OPENAI_API_KEY)) {
-      throw new Error('Invalid OpenAI API key format');
-    }
+    if (!OPENAI_API_KEY) throw new Error('OpenAI API key is not configured');
+    if (!isValidOpenAIKey(OPENAI_API_KEY)) throw new Error('Invalid OpenAI API key format');
 
     console.log(`Generating industry variations for: ${industry} (${searchEngine})`);
     console.log(`Using API key: ${sanitizeApiKey(OPENAI_API_KEY)}`);
 
-    // Define different prompts for different search engines
-    let systemPrompt;
+    const blacklist = [
+      'performance', 'services', 'solutions', 'business',
+      'growth', 'strategy', 'innovation', 'general', 'digital', 'content',
+      'consulting', 'execution', 'creative', 'delivery', 'platform', 'brand', 'apparel'
+    ];
 
+    let systemPrompt = '';
     if (searchEngine === 'brave') {
-      systemPrompt = `You are a search expert specializing in LinkedIn profile discovery using concise, high-signal industry terms.
-    
-    Your task is to generate 3-4 tightly relevant, single-word variations for a given industry that improve search precision.
-    
-    Instructions:
-    1. Return only **single words** — no spaces, slashes, or hyphens.
-    2. Include **abbreviations**, **skill keywords**, **job-function tags**, and **niche terms**.
-    3. Think like a LinkedIn recruiter: Use terms you'd expect in a person's **headline**, **job title**, or **skills section**.
-    4. Avoid generic terms like "business", "solutions", "services", or "technology" unless absolutely core to the field.
-    5. Return ONLY a JSON array of strings (no additional text or explanations)
-    
-    Examples:
-    - "SaaS" → ["saas", "software", "platforms", "cloud", "tech", "subscription"]
-    - "Fintech" → ["fintech", "banking", "payments", "crypto", "finance", "wallets"]
-    - "Media" → ["media", "advertising", "broadcast", "publishing", "editorial", "content"]
-    `;
-    }
-    else {
-      systemPrompt = `You are a LinkedIn profile search expert helping generate powerful industry keyword variations for search queries.
-    
-    Your goal is to return 2 variations of a given industry term that reflect how professionals describe their background on LinkedIn.
-    
-    Instructions:
-    1. Include **realistic multi-word phrases**, **abbreviations**, and **job-field jargon** commonly used on LinkedIn.
-    2. Prioritize terms used in **headlines**, **job titles**, **About sections**, or **company blurbs**.
-    3. Avoid generic filler words like "services", "solutions", or "technology" unless core to the industry.
-    4. Return ONLY a JSON array of strings (no additional text or explanations)
-    5. Think of **what people say they work in**, not just what the industry is called.
-    
-    Examples:
-    - "SaaS" → ["cloud software", "software development"]
-    - "Fintech" → ["financial technology", "banking tech"]
-    - "Media" → ["digital media", "advertising"]
-    `;
+      systemPrompt = `You are a search expert specializing in LinkedIn profile discovery using precise, high-signal keywords.
+
+Your task is to generate 2-3 **specific**, tightly relevant, single-word industry variations for a given industry.
+⚠️ DO NOT return vague words like: "performance", "solutions", "business", "services", or "innovation".
+✅ Only return terms you'd expect in real **LinkedIn job titles, skills, or About sections**.
+
+Instructions:
+- One-word terms only. No hyphens or spaces.
+- Use abbreviations (e.g. "seo", "ppc", "ux"), role tags, or domain-specific words.
+- Return ONLY a JSON array of strings (no extra explanation).
+
+Examples:
+- "Digital Marketing" → ["seo", "ppc", "growthmarketing"]
+- "Fintech" → ["banking", "payments", "crypto"]
+- "SaaS" → ["saas", "software", "cloud"]`;
+    } else {
+      systemPrompt = `You are a LinkedIn search expert. Your job is to generate **2-3 industry keyword variations** that help recruiters find professionals in a given domain.
+⚠️ Never return vague terms like: "performance", "services", "business", "technology", "solutions", "innovation", or "strategy". These are NOT industries.
+✅ Only use real, specific, and descriptive LinkedIn-relevant terms that reflect **how people describe their field** (e.g. job titles, About sections, etc).
+
+Instructions:
+- Use realistic, high-precision, **multi-word or one-word** LinkedIn-style terms.
+- Use abbreviations, niche role descriptors, or real job terms.
+- Return ONLY a JSON array of strings (no extra output)
+
+Examples:
+- "Digital Marketing" → ["seo specialist", "ppc marketing"]
+- "Fintech" → ["blockchain finance", "payments technology"]
+- "Apparel" → ["fashion retail", "clothing manufacturing"]`;
     }
 
+    const userPrompt = `Generate 2-3 tightly related industry variations for "${industry}". These must be:
+- Specific to "${industry}" (e.g. subdomains or synonyms)
+- Not vague or generic (❌ no "performance", "solutions", "business", etc.)
+- What someone might list in their LinkedIn job title or About section
 
-    // Call OpenAI API to generate industry variations
+Return ONLY a JSON array of valid strings.`;
+
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: 'gpt-4o-mini',
         messages: [
-          {
-            role: 'system',
-            content: systemPrompt
-          },
-          {
-            role: 'user',
-            content: `Generate 3-4 industry variations for: ${industry}`
-          }
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
         ],
         response_format: { type: "json_object" }
       },
       {
         headers: {
-          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
     );
 
-    // Parse the response
-    // const content = response.data.choices[0].message.content;
-    // const result = JSON.parse(content);
-
-    // Extract the array from the result (handle different possible response formats)
-    let variations = [];
     const content = response.data.choices[0].message.content.trim();
-
-    // Optional: try to clean up common wrapping like markdown code blocks
     const clean = content.replace(/^```(json)?|```$/g, '').trim();
-
     const result = JSON.parse(clean);
 
-    if (Array.isArray(result.variations)) {
-      variations = result.variations;
-    } else if (Array.isArray(result.industry_variations)) {
-      variations = result.industry_variations;
-    } else if (Array.isArray(result.terms)) {
-      variations = result.terms;
-    } else if (Array.isArray(result)) {
+    let variations = [];
+
+    if (Array.isArray(result)) {
       variations = result;
     } else {
-      // Fallback: try to find any array in the response
-      const firstArray = Object.values(result).find(value => Array.isArray(value));
-      if (firstArray) {
-        variations = firstArray;
-      } else {
-        throw new Error('Could not extract variations array from OpenAI response');
-      }
+      variations = Object.values(result).find(val => Array.isArray(val)) || [];
     }
 
-    console.log(`Generated industry variations:`, variations);
+    // Sanitize and filter out blacklist terms
+    variations = variations
+      .map(v => v.toLowerCase().trim())
+      .filter(v => !blacklist.includes(v) && v.length > 1);
 
-    // Ensure we have at least the original industry term
+    // Ensure original is preserved
     if (!variations.includes(industry.toLowerCase())) {
       variations.unshift(industry.toLowerCase());
     }
 
-    // Limit to 6 variations to avoid too many queries
+    console.log(`✅ Final variations:`, variations);
+
     return variations.slice(0, 6);
 
   } catch (error) {
-    console.error('Error generating industry variations:', error);
+    console.error('❌ Error generating industry variations:', error.message);
 
-    // Handle OpenAI API errors
     if (error.response) {
       const status = error.response.status;
-      let message = 'Unknown OpenAI API error';
-
-      if (status === 401) {
-        message = 'Invalid or expired OpenAI API key';
-      } else if (status === 429) {
-        message = 'OpenAI rate limit exceeded';
-      } else if (status === 400) {
-        message = 'Bad request to OpenAI API';
-      } else if (error.response.data && error.response.data.error) {
-        message = `OpenAI API error: ${error.response.data.error.message || error.response.data.error}`;
-      }
-
-      console.error(`OpenAI API error (${status}): ${message}`);
+      const errMsg =
+        status === 401
+          ? 'Invalid OpenAI API key'
+          : status === 429
+            ? 'OpenAI rate limit exceeded'
+            : status === 400
+              ? 'Bad request to OpenAI API'
+              : error.response.data?.error?.message || 'Unknown API error';
+      console.error(`OpenAI API error (${status}): ${errMsg}`);
     }
 
-    // Fallback: return the original industry with some generic variations
-    console.log(`Falling back to basic variations for: ${industry}`);
-    return [industry.toLowerCase(), 'tech', 'technology', 'business', 'services'];
+    console.log(`🔁 Fallback to basic variations for: ${industry}`);
+    return [industry.toLowerCase()];
   }
 };
+
 
 // Extract LinkedIn profiles from CSV data using specific prompt
 exports.extractProfilesFromCsvData = async (csvData, industries = []) => {

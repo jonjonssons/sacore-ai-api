@@ -11,6 +11,27 @@ const CREDIT_COSTS = {
   EXPORT: 10
 };
 
+// Check if user has enough credits without consuming them
+exports.checkCredits = async (userId, amount = 1) => {
+  const user = await User.findOne({ _id: userId });
+
+  if (!user) {
+    throw new UnauthenticatedError('User not found');
+  }
+
+  // Check if user has enough credits
+  if (user.credits < amount) {
+    throw new ForbiddenError(`Not enough credits. Required: ${amount}, Available: ${user.credits}`);
+  }
+
+  return {
+    hasEnoughCredits: true,
+    availableCredits: user.credits,
+    requiredCredits: amount,
+    remainingAfter: user.credits - amount
+  };
+};
+
 // Consume credits and log the transaction
 exports.consumeCredits = async (userId, operation, amount = 1) => {
   const user = await User.findOne({ _id: userId });

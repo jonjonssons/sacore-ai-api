@@ -6,8 +6,9 @@ const GOOGLE_CSE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
 
 // Search LinkedIn profiles using Google CSE
 exports.searchLinkedInProfiles = async (query, start = 1, retryCount = 0) => {
-  const maxRetries = 3;
-  const baseDelay = 1000;
+  const maxRetries = 3; // Increased retries
+  const baseDelay = 2000; // Increased base delay to 2 seconds
+
   try {
     if (!GOOGLE_API_KEY || !GOOGLE_CSE_ID) {
       throw new Error('Google CSE configuration missing');
@@ -25,7 +26,7 @@ exports.searchLinkedInProfiles = async (query, start = 1, retryCount = 0) => {
         cx: GOOGLE_CSE_ID,
         q: searchQuery,
         start: start,
-        num: 10 // Max allowed by Google CSE
+        num: 10
       }
     });
 
@@ -44,20 +45,41 @@ exports.searchLinkedInProfiles = async (query, start = 1, retryCount = 0) => {
       pagination: {
         currentPage: Math.floor(start / 10) + 1,
         totalResults: parseInt(totalResults),
-        hasNextPage: start + 10 <= 100 && start + 10 <= parseInt(totalResults) // Google CSE limits to 100 results
+        hasNextPage: start + 10 <= 100 && start + 10 <= parseInt(totalResults)
       }
     };
   } catch (error) {
+    // Handle rate limiting and other errors
     if (error.response && error.response.status === 429 && retryCount < maxRetries) {
-      // Exponential backoff: wait longer with each retry
-      const delay = baseDelay * Math.pow(2, retryCount);
-      console.log(`Rate limited. Retrying in ${delay}ms... (attempt ${retryCount + 1}/${maxRetries})`);
+      // Exponential backoff with jitter
+      const jitter = Math.random() * 1000; // Add randomness
+      const delay = baseDelay * Math.pow(2, retryCount) + jitter;
+      console.log(`Rate limited. Retrying in ${Math.round(delay)}ms... (attempt ${retryCount + 1}/${maxRetries})`);
 
       await new Promise(resolve => setTimeout(resolve, delay));
       return exports.searchLinkedInProfiles(query, start, retryCount + 1);
     }
 
-    console.error('Google CSE search error:', error.message);
+    // Handle quota exceeded error specifically
+    if (error.response && error.response.status === 403) {
+      const errorDetails = error.response.data?.error?.errors?.[0];
+      if (errorDetails?.reason === 'dailyLimitExceeded' || errorDetails?.reason === 'quotaExceeded') {
+        console.error('Google CSE quota exceeded for today');
+        return {
+          error: true,
+          status: 403,
+          message: 'Daily quota exceeded',
+          details: 'Google Custom Search daily limit reached'
+        };
+      }
+    }
+
+    console.error('Google CSE search error:', {
+      status: error.response?.status,
+      message: error.message,
+      details: error.response?.data
+    });
+
     return {
       error: true,
       status: error.response?.status || 500,

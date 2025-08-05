@@ -945,17 +945,43 @@ exports.extractProfilesDataBatch = async (profiles, industries = [], titleFilter
 
         // Helper function to extract location from og:description using regex for "Location:" and equivalents
         const extractLocationFromDescription = (ogDesc, snippet) => {
-            const locationRegex = /(?:Location|Plats|Ort|Lieu|Ubicación|Standort|Lugar|Localización|Lokasi|Lokasyon|位置|地点|所在地)[\s]*[:\-–][\s]*([^\n\r·,;]+)/i;
+            // Fixed regex with word boundaries to prevent matching "location" within "relocation"
+            const locationRegex = /\b(?:Location|Plats|Ort|Lieu|Ubicación|Standort|Lugar|Localización|Lokasi|Lokasyon|位置|地点|所在地)\b[\s]*[:\-–][\s]*([^\n\r·,;]+)/i;
+
+            let extractedLocation = '';
 
             // First check og:description only
             let match = ogDesc.match(locationRegex);
-            if (match && match[1]) return match[1].trim();
+            if (match && match[1]) {
+                extractedLocation = match[1].trim();
+            } else {
+                // Fallback: then try snippet if not found
+                match = snippet.match(locationRegex);
+                if (match && match[1]) {
+                    extractedLocation = match[1].trim();
+                }
+            }
 
-            // Fallback: then try snippet if not found
-            match = snippet.match(locationRegex);
-            if (match && match[1]) return match[1].trim();
+            if (extractedLocation) {
+                // Stop at the first dot to remove LinkedIn boilerplate text
+                const dotIndex = extractedLocation.indexOf('.');
+                if (dotIndex !== -1) {
+                    extractedLocation = extractedLocation.substring(0, dotIndex);
+                }
 
-            return '';
+                // Remove HTML tags
+                extractedLocation = extractedLocation.replace(/<[^>]*>/g, '');
+
+                // Clean up extra whitespace
+                extractedLocation = extractedLocation.trim();
+
+                // Log the cleaning process for debugging
+                if (match && match[1] !== extractedLocation) {
+                    console.log(`🧹 Location cleaned: "${match[1]}" → "${extractedLocation}"`);
+                }
+            }
+
+            return extractedLocation;
         };
 
         // Extract location from og:description for each profile if available
@@ -1028,17 +1054,19 @@ Instructions:
    - If you can't determine a clear title, return an empty string
 
 6. For the industry:
-   - First, try to match with one of the target industries: ${industriesString} using reasoning.
+${industries.length > 0 ?
+                `   - Try to match with one of the target industries: ${industriesString} using reasoning.
+   - If a clear match is found with the target industries, use that industry
+   - If no clear match is found with target industries, infer the actual industry using the methods below:` :
+                `   - Identify and extract the actual industry this person works in using the following methods:`}
    - Consider:
-    - The person's job title (e.g., "Product Manager" → "software")
-    - Keywords or context in the snippet (e.g., "cloud platform", "banking systems", "e-commerce")
-    - The nature of the current employer if recognizable (e.g., "Shopify" → "e-commerce")
-    - If a clear match is found with the target industries, use that industry
-    - If no clear match is found with target industries, infer the actual industry by:
-    - Looking at the language in their description
-    - Reasoning about the employer's domain
-    - Using general knowledge about the company or role
-    - Return the best-fitting industry. If no clear industry is supported, return an empty string ""
+    - The person's job title (e.g., "Product Manager" → "Technology/Software")
+    - Keywords or context in the snippet (e.g., "cloud platform" → "Technology", "banking systems" → "Financial Services", "e-commerce" → "Retail/E-commerce")
+    - The nature of the current employer if recognizable (e.g., "Shopify" → "E-commerce", "Goldman Sachs" → "Financial Services")
+   - Look at the language in their description for industry-specific terms
+   - Use reasoning about the employer's domain and business type
+   - Use general knowledge about the company or role
+   - Return the best-fitting industry name. ${industries.length > 0 ? 'If no clear industry can be determined, return an empty string ""' : 'Always try to identify an industry - only return empty string if absolutely no industry can be determined from the available information'}
 
 7. Return EXACTLY this JSON format with no additional text:
 {
