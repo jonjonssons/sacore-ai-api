@@ -734,6 +734,66 @@ exports.searchLinkedInProfiles = async (req, res) => {
             console.log(`🎯 Reached 500 profile limit with role "${currentRole}"`);
             break;
           }
+          // FALLBACK: Search without industry if we still need more profiles and no industry was provided
+          if (allSignalHireProfiles.length < 500 && (!convertedIndustries.primary && !convertedIndustries.secondary)) {
+            console.log(`Searching without industry for role "${currentRole}" (no industry provided)`);
+
+            const noIndustrySearchCriteria = {
+              title: currentRole,
+              location: location,
+              size: 100
+              // No industry field - SignalHire will search across all industries
+            };
+
+            try {
+              const noIndustryResponse = await signalHireService.searchProfilesByCriteria(noIndustrySearchCriteria);
+
+              if (noIndustryResponse.success && noIndustryResponse.results && noIndustryResponse.results.profiles) {
+                let roleProfiles = [...noIndustryResponse.results.profiles];
+
+                // Pagination for this role without industry
+                if (noIndustryResponse.results.scrollId && noIndustryResponse.results.requestId && (allSignalHireProfiles.length + roleProfiles.length) < 500) {
+                  let currentScrollId = noIndustryResponse.results.scrollId;
+                  const requestId = noIndustryResponse.results.requestId;
+                  let page = 1;
+
+                  while (currentScrollId && (allSignalHireProfiles.length + roleProfiles.length) < 500 && page < 50) {
+                    try {
+                      const scrollResponse = await signalHireService.scrollSearch(requestId, currentScrollId);
+
+                      if (scrollResponse.success && scrollResponse.results && scrollResponse.results.profiles && scrollResponse.results.profiles.length > 0) {
+                        roleProfiles = roleProfiles.concat(scrollResponse.results.profiles);
+
+                        if (scrollResponse.results.scrollId) {
+                          currentScrollId = scrollResponse.results.scrollId;
+                        } else {
+                          break;
+                        }
+                      } else {
+                        break;
+                      }
+                      page++;
+                    } catch (scrollError) {
+                      console.error(`SignalHire scroll search failed:`, scrollError);
+                      break;
+                    }
+                  }
+                }
+
+                // Deduplicate and add new profiles
+                const newProfiles = roleProfiles.filter(p => p.uid && !usedUids.has(p.uid));
+                newProfiles.forEach(p => usedUids.add(p.uid));
+
+                const remainingSlots = 500 - allSignalHireProfiles.length;
+                const profilesToAdd = newProfiles.slice(0, remainingSlots);
+                allSignalHireProfiles.push(...profilesToAdd);
+
+                console.log(`Added ${profilesToAdd.length} unique profiles from "${currentRole}" (no industry). Total: ${allSignalHireProfiles.length}`);
+              }
+            } catch (noIndustryError) {
+              console.error(`No-industry search failed for role "${currentRole}":`, noIndustryError);
+            }
+          }
         }
 
         // Ensure we don't exceed 500 profiles (safety check)
