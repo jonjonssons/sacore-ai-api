@@ -7,7 +7,7 @@ const SearchHistory = require('../models/SearchHistory');
 const usageService = require('../services/usageService');
 const Projects = require('../models/Projects');
 const SavedProfile = require('../models/SavedProfile');
-
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Get user analytics for admin dashboard
 exports.getUserAnalytics = async (req, res) => {
