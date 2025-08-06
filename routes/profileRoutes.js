@@ -2902,6 +2902,7 @@ router.post(
 
       // ✅ STEP 3: HANDLE PROFILES STUCK IN "PENDING" OR "IN_PROGRESS" STATUS
       if (idsToEnrich.length > 0) {
+        const callbackUrl = `${process.env.API_BASE_URL}/api/callback/signalhire`;
         const stuckProfiles = await ProfileRequest.find({
           profileId: { $in: idsToEnrich },
           status: { $in: ['pending', 'in_progress'] }
@@ -2919,7 +2920,7 @@ router.post(
           const retryPromises = stuckProfiles.map(async (profile) => {
             try {
               console.log(`🔄 Retrying stuck profile: ${profile.profileId}`);
-              return await signalHireService.searchProfiles([profile.profileId]);
+              return await signalHireService.searchProfiles([profile.profileId], callbackUrl);
             } catch (error) {
               console.error(`❌ Retry failed for profile ${profile.profileId}:`, error.message);
               return null;
