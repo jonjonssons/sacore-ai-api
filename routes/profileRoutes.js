@@ -567,7 +567,7 @@ router.post(
       // Run OpenAI analysis
       if (validProfiles.length > 0) {
         try {
-          const OPENAI_BATCH_SIZE = 10;
+          const OPENAI_BATCH_SIZE = 5;
           const openaiBatches = [];
 
           for (let i = 0; i < validProfiles.length; i += OPENAI_BATCH_SIZE) {
@@ -1766,22 +1766,115 @@ router.post(
         })}\n\n`);
 
         const transformEnrichedData = (data) => {
+          // Handle both ContactOut and SignalHire data formats
           const sourceData = data.contactOutData || data;
-          if (!sourceData.full_name && !sourceData.experience) return null;
+
+          // Check for valid profile data (handle both fullName and full_name)
+          if (!sourceData.fullName && !sourceData.full_name && !sourceData.experience) return null;
+
+          // Helper function to parse ContactOut experience strings
+          const parseContactOutExperience = (expArray) => {
+            if (!Array.isArray(expArray)) return [];
+
+            return expArray.map(expString => {
+              if (typeof expString !== 'string') return expString; // Already an object
+
+              // Parse: "Title at Company in StartYear - EndYear" or "Title at Company in StartYear - Present"
+              const match = expString.match(/^(.+?)\s+at\s+(.+?)\s+in\s+(\d{4})\s*-\s*(.+)$/);
+
+              if (match) {
+                const [, position, company, startYear, endPart] = match;
+                const isPresent = endPart.toLowerCase().includes('present');
+                const endYear = isPresent ? null : endPart.trim();
+
+                return {
+                  position: position.trim(),
+                  company: company.trim(),
+                  started: `${startYear}-01-01T00:00:00+00:00`, // Approximate start date
+                  ended: isPresent ? null : `${endYear}-12-31T00:00:00+00:00`, // Approximate end date
+                  current: isPresent,
+                  summary: expString // Keep original string for reference
+                };
+              }
+
+              // Fallback for unparseable strings
+              return {
+                position: '',
+                company: '',
+                started: '',
+                ended: '',
+                current: false,
+                summary: expString
+              };
+            });
+          };
+
           return {
-            fullName: sourceData.full_name || '',
-            summary: sourceData.company?.overview || sourceData.headline || '',
-            headLine: sourceData.headline || '',
-            experience: (sourceData.experience || []).map(exp => (typeof exp === 'string' ? { summary: exp } : exp)),
-            education: (sourceData.education || []).map(edu => (typeof edu === 'string' ? { summary: edu } : edu)),
+            // ✅ Handle both formats: SignalHire uses 'fullName', ContactOut uses 'full_name'
+            fullName: sourceData.fullName || sourceData.full_name || '',
+
+            // ✅ ADD MISSING GENDER FIELD
+            gender: sourceData.gender || '',
+
+            // ✅ Handle summary/headline from multiple sources
+            summary: sourceData.summary || sourceData.company?.overview || sourceData.headline || sourceData.headLine || '',
+            headLine: sourceData.headLine || sourceData.headline || '',
+
+            // ✅ FIXED: Parse ContactOut experience strings OR handle SignalHire objects
+            experience: sourceData.experience ? (
+              typeof sourceData.experience[0] === 'string'
+                ? parseContactOutExperience(sourceData.experience)  // ContactOut format
+                : (sourceData.experience || []).map(exp => ({       // SignalHire format
+                  position: exp.position || exp.title || '',
+                  company: exp.company || '',
+                  started: exp.started || exp.startDate || '',
+                  ended: exp.ended || exp.endDate || '',
+                  current: exp.current || false,
+                  summary: exp.summary || exp.description || ''
+                }))
+            ) : [],
+
+            // ✅ Map education correctly
+            education: (sourceData.education || []).map(edu => {
+              if (typeof edu === 'string') {
+                // Parse ContactOut education strings like "Degree at University in StartYear - EndYear"
+                const match = edu.match(/^(.+?)\s+at\s+(.+?)\s+in\s+(\d{4})\s*-\s*(\d{4}|Present)$/);
+                if (match) {
+                  const [, degree, institution, startYear, endYear] = match;
+                  return {
+                    institution: institution.trim(),
+                    degree: degree.trim(),
+                    field: '',
+                    startedYear: parseInt(startYear),
+                    endedYear: endYear === 'Present' ? null : parseInt(endYear)
+                  };
+                }
+                return { summary: edu };
+              }
+
+              // SignalHire format
+              return {
+                institution: edu.institution || edu.university || edu.school || '',
+                degree: Array.isArray(edu.degree) ? edu.degree[0] : edu.degree || '',
+                field: edu.field || edu.fieldOfStudy || edu.faculty || '',
+                startedYear: edu.startedYear || edu.startYear || '',
+                endedYear: edu.endedYear || edu.endYear || ''
+              };
+            }),
+
+            // ✅ Skills array
             skills: sourceData.skills || [],
-            locations: sourceData.location ? [sourceData.location] : [],
+
+            // ✅ Handle locations correctly (SignalHire uses array, ContactOut uses single)
+            locations: sourceData.locations || (sourceData.location ? [{ name: sourceData.location }] : []),
+
+            // ✅ Industry mapping
             industry: sourceData.industry || sourceData.company?.industry || ''
           };
         };
 
         // ✅ PARALLEL PROCESSING with batching
-        const ANALYSIS_BATCH_SIZE = 10;
+        const ANALYSIS_BATCH_SIZE = 5;
         const enrichedBatches = [];
 
         for (let i = 0; i < enrichedProfiles.length; i += ANALYSIS_BATCH_SIZE) {

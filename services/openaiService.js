@@ -962,93 +962,174 @@ exports.analyzeProfilesBatchAgainstCriteria = async (profiles, criteria) => {
       throw new Error('Invalid OpenAI API key format');
     }
 
-    console.log(`Analyzing batch of ${profiles.length} profiles against criteria`);
+    console.log(`🔍 Analyzing batch of ${profiles.length} profiles against ${criteria.length} criteria`);
     console.log(`Using API key: ${sanitizeApiKey(OPENAI_API_KEY)}`);
     const currentDate = new Date().toISOString().split('T')[0];
 
-    // Helper to format experience
-    const calculateExperienceSummary = (experienceArray) => {
+    // Enhanced helper to format experience with detailed analysis
+    const formatProfileExperience = (experienceArray) => {
+      if (!experienceArray || !Array.isArray(experienceArray) || experienceArray.length === 0) {
+        return 'No experience data available';
+      }
+
       const today = new Date();
 
-      const formatDuration = (months) => {
-        const years = Math.floor(months / 12);
-        const remainingMonths = Math.round(months % 12);
-        let parts = [];
-        if (years > 0) parts.push(`${years} year${years > 1 ? 's' : ''}`);
-        if (remainingMonths > 0) parts.push(`${remainingMonths} month${remainingMonths > 1 ? 's' : ''}`);
-        return parts.join(' ') || 'Less than a month';
-      };
+      return experienceArray.map((exp, index) => {
+        const startDate = exp.started ? new Date(exp.started) : null;
+        const endDate = exp.ended ? new Date(exp.ended) : today;
 
-      const result = experienceArray.map(exp => {
-        const start = new Date(exp.started);
-        const end = exp.ended ? new Date(exp.ended) : today;
-        const diffInMonths = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
-        const position = exp.position || 'Unknown Position';
+        let duration = 'Unknown duration';
+        if (startDate) {
+          const diffMonths = (endDate.getFullYear() - startDate.getFullYear()) * 12 +
+            (endDate.getMonth() - startDate.getMonth());
+          const years = Math.floor(diffMonths / 12);
+          const months = diffMonths % 12;
+
+          duration = years > 0 ?
+            `${years} year${years > 1 ? 's' : ''} ${months > 0 ? `${months} month${months > 1 ? 's' : ''}` : ''}`.trim() :
+            `${months} month${months > 1 ? 's' : ''}`;
+        }
+
+        const position = exp.position || exp.title || 'Unknown Position';
         const company = exp.company || 'Unknown Company';
-        const duration = formatDuration(diffInMonths);
-        return `${position} at ${company}: ${duration}`;
-      });
+        const description = exp.description ? ` - ${exp.description.substring(0, 200)}` : '';
+        const isCurrent = !exp.ended || exp.ended === null;
 
-      return result.join('\n');
+        return `${index + 1}. ${position} at ${company} (${duration}${isCurrent ? ', Current' : ''})${description}`;
+      }).join('\n');
     };
 
-    // Enrich each profile and prepare summaries
-    const enrichedProfiles = profiles.map((profile, index) => {
-      const experienceSummary = calculateExperienceSummary(profile.experience || []);
+    // Enhanced helper to format skills
+    const formatProfileSkills = (skillsArray) => {
+      if (!skillsArray || !Array.isArray(skillsArray) || skillsArray.length === 0) {
+        return 'No skills data available';
+      }
+      return skillsArray.slice(0, 20).join(', '); // Limit to 20 skills for clarity
+    };
+
+    // Enhanced helper to format education
+    const formatProfileEducation = (educationArray) => {
+      if (!educationArray || !Array.isArray(educationArray) || educationArray.length === 0) {
+        return 'No education data available';
+      }
+
+      return educationArray.map((edu, index) => {
+        const institution = edu.institution || edu.school || 'Unknown Institution';
+        const degree = edu.degree || 'Unknown Degree';
+        const field = edu.field || edu.fieldOfStudy || '';
+        const years = edu.years || (edu.startYear && edu.endYear ? `${edu.startYear}-${edu.endYear}` : '');
+
+        return `${index + 1}. ${degree}${field ? ` in ${field}` : ''} from ${institution}${years ? ` (${years})` : ''}`;
+      }).join('\n');
+    };
+
+    // Prepare detailed profile summaries for analysis
+    const detailedProfiles = profiles.map((profile, index) => {
+      const experience = formatProfileExperience(profile.experience || []);
+      const skills = formatProfileSkills(profile.skills || []);
+      const education = formatProfileEducation(profile.education || []);
+
       return {
-        ...profile,
-        experienceSummary,
-        summaryString: `Profile ${index + 1}:\n${experienceSummary}\n`
+        profileIndex: index + 1,
+        fullName: profile.fullName || profile.name || 'Unknown Name',
+        gender: profile.gender || 'Not specified', // ✅ ADD GENDER
+        currentTitle: profile.currentTitle || profile.title || profile.headLine || 'Unknown Title',
+        currentCompany: profile.currentCompany || profile.company || 'Unknown Company',
+        location: profile.locations?.[0]?.name || profile.location || 'Unknown Location', // ✅ FIX LOCATION
+        summary: profile.summary || profile.about || 'No summary available',
+        experience,
+        skills,
+        education,
+        totalExperience: profile.experience ? profile.experience.length : 0,
+        profileData: profile // Keep original for reference
       };
     });
 
-    const profileSummaries = enrichedProfiles.map(p => p.summaryString).join('\n');
+    // Create the enhanced system prompt
+    // Create the enhanced system prompt
+    const systemPrompt = `You are an HR analyst evaluating candidates against job criteria. Analyze thoroughly using ONLY provided data.
 
-    // System message with embedded profile experience summaries
-    const systemMessage = `
-You are an AI assistant that evaluates LinkedIn profiles against specific job criteria.
+        RULES:
+        - A criterion is met (true) ONLY with clear evidence
+        - Calculate experience durations precisely across ALL relevant positions
+        - For gender criteria: Check the explicit "Gender:" field first. If not available, analyze the name only if you can confidently determine gender from the name alone. If uncertain, return "Not specified"
+        - For SaaS experience, count ALL positions at SaaS companies (e.g., Snowflake = SaaS)
+        - For account executive experience, include related roles like "Strategic Account Development"
+        - Today's date: ${currentDate}
+        
+  
+                GENDER ANALYSIS RULES:
+        - If "Gender:" field is explicitly provided, use that value
+        - If no "Gender:" field, analyze the name for clear gender indicators:
+          * Only use names that are overwhelmingly gender-specific across cultures (Sandra, Maria, Carolina, Jennifer, John, Michael, David, Robert, Susan, Linda)
+          * Be very cautious with names that might be unisex or culturally variable (Iman, Alex, Jordan, Taylor, Casey, etc.)
+          * When in doubt about cultural context or name variations, return "Not specified"
+        - Name-based gender identification should only be used for universally recognized, non-ambiguous names
+        - Be conservative - it's better to say "Not specified" than to guess incorrectly
+        - Reserve gender identification only for names with clear, universal gender associations
+        
+        RESPONSE FORMAT:
+        {
+          "profiles": [
+            {
+              "profileId": 1,
+              "breakdown": [
+                {
+                  "criterion": "exact text",
+                  "met": true/false,
+                  "evidence": "specific evidence with calculations",
+                  "reasoning": "brief explanation"
+                }
+              ],
+              "description": "summary of qualification level"
+            }
+          ]
+        }
+        
+        Return valid JSON only.`;
+    // Create detailed user content with structured profile data
+    const userContent = `CANDIDATE PROFILES TO ANALYZE:
+        
+                ${detailedProfiles.map(profile => `
+PROFILE ${profile.profileIndex}: ${profile.fullName}
+Gender: ${profile.gender}
+Current Position: ${profile.currentTitle} at ${profile.currentCompany}
+Location: ${profile.location}
+Summary: ${profile.summary}
+        
+WORK EXPERIENCE:
+        ${profile.experience}
+        
+SKILLS:
+${profile.skills}
+        
+EDUCATION:
+${profile.education}
 
-Instructions:
-1. Today's date is ${currentDate}.
-2. You will receive an array of profiles and an array of evaluation criteria.
-3. Use the following profile experience summaries:
+Total Experience Entries: ${profile.totalExperience}
+---`).join('\n')}
+        
+EVALUATION CRITERIA:
+${criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')}
 
-${profileSummaries}
+Please analyze each profile against ALL criteria with detailed evidence and reasoning.`;
 
-4. For EACH profile:
-   - Check how well the profile satisfies EACH individual criterion.
-   - Focus more on the durations if there are any in the criterias.
-   - Use the experienceSummary field as a basis for evaluating each experience.
-   - Also consider, calculate and analyze all the experiences with their summary of the profile whether it is from current experience or past.
-   - Provide a description summarizing why the profile got that criterion matched or if the criteria doesn't match then explain why exactly it didn't matched.
-
-5. Return a JSON array called "profiles" where each element is an object like:
-  {
-    profileId: <index of the profile in the input array starting from 1>,
-    breakdown: [
-      { criterion: "Criterion 1 text", met: true/false },
-      ...
-    ],
-    description: "Brief summary explaining the criterion met and context"
-  }
-
-6. Do not include any markdown, commentary, or anything outside the JSON.
-7. Be concise and clear in your scoring.
-    `.trim();
+    console.log(`📊 Sending ${detailedProfiles.length} detailed profiles for analysis...`);
 
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: 'gpt-4o-mini',
-        temperature: 0.2,
+        temperature: 0.3, // Increased for more thorough analysis
+        max_tokens: 4000, // Increased for detailed responses
         messages: [
           {
             role: 'system',
-            content: systemMessage
+            content: systemPrompt
           },
           {
             role: 'user',
-            content: `Profiles:\n${JSON.stringify(enrichedProfiles, null, 2)}\n\nCriteria:\n${JSON.stringify(criteria, null, 2)}`
+            content: userContent
           }
         ],
         response_format: { type: "json_object" }
@@ -1062,15 +1143,59 @@ ${profileSummaries}
     );
 
     const content = response.data.choices[0].message.content;
-    console.log('Raw response content from OpenAI:', content);
+    console.log('🔍 Raw response content from OpenAI (first 500 chars):', content.substring(0, 500));
 
-    const analysisResults = JSON.parse(content);
+    let analysisResults;
+    try {
+      analysisResults = JSON.parse(content);
+    } catch (parseError) {
+      console.error('❌ JSON parsing failed for analysis results:', parseError.message);
+      console.error('Raw content:', content);
+      throw new Error('Failed to parse analysis results from OpenAI');
+    }
 
-    console.log('Batch profile analysis completed');
+    // Validate and enhance results
+    if (!analysisResults.profiles || !Array.isArray(analysisResults.profiles)) {
+      throw new Error('Invalid response format: missing profiles array');
+    }
 
+    // Ensure we have results for all profiles
+    if (analysisResults.profiles.length !== profiles.length) {
+      console.warn(`⚠️  Expected ${profiles.length} analysis results, got ${analysisResults.profiles.length}`);
+    }
+
+    // Validate each profile result
+    analysisResults.profiles.forEach((result, index) => {
+      if (!result.breakdown || !Array.isArray(result.breakdown)) {
+        console.warn(`⚠️  Profile ${index + 1} missing breakdown array`);
+        result.breakdown = [];
+      }
+
+      // Ensure we have evaluation for all criteria
+      if (result.breakdown.length !== criteria.length) {
+        console.warn(`⚠️  Profile ${index + 1} has ${result.breakdown.length} evaluations, expected ${criteria.length}`);
+      }
+
+      // Add default values for missing fields
+      result.breakdown.forEach((item, itemIndex) => {
+        if (!item.evidence) item.evidence = 'No specific evidence provided';
+        if (!item.reasoning) item.reasoning = 'Analysis incomplete';
+        if (typeof item.met !== 'boolean') {
+          console.warn(`⚠️  Invalid 'met' value for criterion ${itemIndex + 1}, defaulting to false`);
+          item.met = false;
+        }
+      });
+
+      if (!result.description) {
+        result.description = 'Analysis incomplete - please review individual criterion evaluations';
+      }
+    });
+
+    console.log('✅ Batch profile analysis completed successfully');
     return analysisResults;
+
   } catch (error) {
-    console.error('Error analyzing profiles batch against criteria:', error);
+    console.error('❌ Error analyzing profiles batch against criteria:', error);
 
     if (error.response) {
       const status = error.response.status;
