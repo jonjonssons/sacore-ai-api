@@ -1119,9 +1119,11 @@ Please analyze each profile against ALL criteria with detailed evidence and reas
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4o-mini',
-        temperature: 0.3, // Increased for more thorough analysis
-        max_tokens: 4000, // Increased for detailed responses
+        // model: 'gpt-4o-mini',
+        // temperature: 0.3, // Increased for more thorough analysis
+        // max_tokens: 4000, // Increased for detailed responses
+        model: 'gpt-5-mini',
+        max_completion_tokens: 16000, // Increased for detailed responses
         messages: [
           {
             role: 'system',
