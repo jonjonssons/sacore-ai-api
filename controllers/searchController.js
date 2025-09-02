@@ -25,23 +25,47 @@ exports.parseJobRequirements = async (req, res) => {
 
     if (!query) {
       return res.status(StatusCodes.BAD_REQUEST).json({
-        error: 'Please provide a search query'
+        error: 'Query is required'
       });
     }
 
-    // Call the OpenAI service to parse the job requirements
-    const parsedRequirements = await openaiService.parseJobRequirements(query);
+    let parsedRequirements;
+
+    try {
+      // Try Gemini first (following your established pattern)
+      console.log(`Parsing job requirements with Gemini service...`);
+      parsedRequirements = await geminiService.parseJobRequirements(query);
+    } catch (geminiError) {
+      console.warn(`Gemini service failed for job requirements parsing, falling back to OpenAI:`, geminiError.message);
+
+      try {
+        // Fallback to OpenAI
+        console.log(`Fallback: Parsing job requirements with OpenAI service...`);
+        parsedRequirements = await openaiService.parseJobRequirements(query);
+      } catch (openaiError) {
+        console.error(`Both Gemini and OpenAI failed for job requirements parsing:`, openaiError.message);
+
+        // Final fallback - return empty structure to prevent complete failure
+        console.log(`Using fallback empty structure for query: ${query}`);
+        parsedRequirements = {
+          locations: [],
+          titles: [],
+          industries: [],
+          skills: []
+        };
+      }
+    }
 
     // Save the search query to search history for the authenticated user
     const userId = req.user.userId;
     const newSearchHistory = new SearchHistory({
       userId,
-      query
+      query,
+      timestamp: new Date()
     });
     await newSearchHistory.save();
 
-    // Return the parsed requirements
-    res.status(StatusCodes.OK).json({
+    res.json({
       success: true,
       data: parsedRequirements
     });
