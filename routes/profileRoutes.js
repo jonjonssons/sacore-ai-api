@@ -11,6 +11,7 @@ const signalHireService = require('../services/signalHireService');
 const evaluationService = require('../services/evaluationService');
 const creditService = require('../services/creditService');
 const openaiService = require('../services/openaiService');
+const geminiService = require('../services/geminiService');
 const linkedinHelpers = require('../utils/linkedinHelpers');
 const profileController = require('../controllers/profileController');
 const { StatusCodes } = require('http-status-codes');
@@ -24,6 +25,48 @@ const { STATUS_CODES } = require('http');
 const { default: pLimit } = require('p-limit');
 
 const router = express.Router();
+
+// Helper function to analyze profiles with OpenAI + Gemini fallback
+const analyzeProfilesWithFallback = async (profiles, criteria) => {
+  try {
+    // Try OpenAI first
+    console.log('🔄 Trying OpenAI for profile analysis...');
+    const result = await openaiService.analyzeProfilesBatchAgainstCriteria(profiles, criteria);
+    console.log('✅ OpenAI analysis successful');
+    return result;
+  } catch (openaiError) {
+    console.warn('⚠️ OpenAI analysis failed:', openaiError.message);
+
+    // Check if it's a quota/rate limit error that warrants fallback
+    const shouldFallback = openaiError.response && (
+      openaiError.response.status === 429 || // Rate limit/quota exceeded
+      openaiError.response.status === 503 || // Service unavailable
+      openaiError.response.status === 502    // Bad gateway
+    );
+
+    if (shouldFallback) {
+      console.log('🤖 Falling back to Gemini for profile analysis...');
+      try {
+        const result = await geminiService.analyzeProfilesBatchAgainstCriteria(profiles, criteria);
+        console.log('✅ Gemini fallback analysis successful');
+
+        // Add a flag to indicate this used fallback
+        result.usedFallback = true;
+        result.fallbackReason = `OpenAI failed: ${openaiError.message}`;
+
+        return result;
+      } catch (geminiError) {
+        console.error('❌ Gemini fallback also failed:', geminiError.message);
+        // If both fail, throw the original OpenAI error
+        throw new Error(`Both OpenAI and Gemini failed. OpenAI: ${openaiError.message}, Gemini: ${geminiError.message}`);
+      }
+    } else {
+      // For other types of errors, just throw the original error
+      throw openaiError;
+    }
+  }
+};
+
 
 // Get profile by LinkedIn URL
 router.get('/profile/:encodedLinkedInUrl', async (req, res) => {
@@ -1911,8 +1954,8 @@ router.post(
 
           if (validProfiles.length > 0) {
             try {
-              // ✅ BATCH OpenAI call instead of individual calls
-              const analysisResult = await openaiService.analyzeProfilesBatchAgainstCriteria(validProfiles, criteria);
+              // ✅ BATCH analysis call with OpenAI + Gemini fallback
+              const analysisResult = await analyzeProfilesWithFallback(validProfiles, criteria);
 
               // Process results and stream them
               analysisResult.profiles.forEach((profileAnalysis, idx) => {
@@ -1929,7 +1972,16 @@ router.post(
                     identifier: identifier,
                     name: mapping.transformedProfile.fullName,
                     enrichedData: profile,
-                    analysis: { score, breakdown, description: profileAnalysis.description },
+                    analysis: {
+                      score,
+                      breakdown,
+                      description: profileAnalysis.description,
+                      ...(analysisResult.usedFallback && {
+                        usedFallback: true,
+                        fallbackReason: analysisResult.fallbackReason,
+                        aiProvider: 'Gemini'
+                      })
+                    },
                     status: 'success',
                     progress: { completed: completedCount, total: totalCount }
                   })}\n\n`);
@@ -1976,13 +2028,23 @@ router.post(
           completedCount++;
 
           try {
-            const analysisResult = await openaiService.analyzeProfilesBatchAgainstCriteria([JSON.parse(JSON.stringify(profileDoc.data))], criteria);
+            const analysisResult = await analyzeProfilesWithFallback([JSON.parse(JSON.stringify(profileDoc.data))], criteria);
             const profileAnalysis = analysisResult.profiles[0];
             const breakdown = profileAnalysis.breakdown || [];
             const score = `${breakdown.filter(c => c.met).length}/${breakdown.length}`;
             res.write(`data: ${JSON.stringify({
               type: 'result', identifier, name: profileDoc.data?.fullName || '', enrichedData: profileDoc.data,
-              analysis: { score, breakdown, description: profileAnalysis.description }, status: 'success',
+              analysis: {
+                score,
+                breakdown,
+                description: profileAnalysis.description,
+                ...(analysisResult.usedFallback && {
+                  usedFallback: true,
+                  fallbackReason: analysisResult.fallbackReason,
+                  aiProvider: 'Gemini'
+                })
+              },
+              status: 'success',
               progress: { completed: completedCount, total: totalCount }
             })}\n\n`);
           } catch (analysisError) {
@@ -2268,7 +2330,7 @@ router.post(
                 processedIdentifiers.add(identifier);
 
                 try {
-                  const analysisResult = await openaiService.analyzeProfilesBatchAgainstCriteria([JSON.parse(JSON.stringify(profileDoc.data))], criteria);
+                  const analysisResult = await analyzeProfilesWithFallback([JSON.parse(JSON.stringify(profileDoc.data))], criteria);
                   const profileAnalysis = analysisResult.profiles[0];
                   const breakdown = profileAnalysis.breakdown || [];
                   const score = `${breakdown.filter(c => c.met).length}/${breakdown.length}`;
@@ -2279,7 +2341,16 @@ router.post(
                     identifier: identifier,
                     name: profileDoc.data?.fullName || '',
                     enrichedData: profileDoc.data,
-                    analysis: { score, breakdown, description: profileAnalysis.description },
+                    analysis: {
+                      score,
+                      breakdown,
+                      description: profileAnalysis.description,
+                      ...(analysisResult.usedFallback && {
+                        usedFallback: true,
+                        fallbackReason: analysisResult.fallbackReason,
+                        aiProvider: 'Gemini'
+                      })
+                    },
                     status: 'success',
                     progress: { completed: completedCount, total: totalCount }
                   })}\n\n`);

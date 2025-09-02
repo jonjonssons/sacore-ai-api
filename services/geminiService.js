@@ -1240,3 +1240,308 @@ ${profilesContent}`;
         }
     }
 };
+
+
+// Analyze profiles batch against criteria using Gemini (fallback for OpenAI)
+exports.analyzeProfilesBatchAgainstCriteria = async (profiles, criteria) => {
+    try {
+        if (!GEMINI_API_KEY) {
+            throw new Error('Gemini API key is not configured');
+        }
+
+        if (!isValidGeminiKey(GEMINI_API_KEY)) {
+            throw new Error('Invalid Gemini API key format');
+        }
+
+        console.log(`🤖 Analyzing ${profiles.length} profiles against ${criteria.length} criteria using Gemini`);
+        console.log(`Using Gemini API key: ${sanitizeApiKey(GEMINI_API_KEY)}`);
+
+        // Get current date for context
+        const currentDate = new Date().toISOString().split('T')[0];
+
+        // Enhanced helper to format experience with duration calculations
+        const formatProfileExperience = (experienceArray) => {
+            if (!experienceArray || !Array.isArray(experienceArray) || experienceArray.length === 0) {
+                return 'No work experience data available';
+            }
+
+            return experienceArray.map((exp, index) => {
+                let startDate, endDate;
+                if (exp.started) {
+                    startDate = new Date(exp.started);
+                    endDate = exp.ended ? new Date(exp.ended) : new Date();
+                }
+
+                let duration = 'Unknown duration';
+                if (startDate) {
+                    const diffMonths = (endDate.getFullYear() - startDate.getFullYear()) * 12 +
+                        (endDate.getMonth() - startDate.getMonth());
+                    const years = Math.floor(diffMonths / 12);
+                    const months = diffMonths % 12;
+
+                    duration = years > 0 ?
+                        `${years} year${years > 1 ? 's' : ''} ${months > 0 ? `${months} month${months > 1 ? 's' : ''}` : ''}`.trim() :
+                        `${months} month${months > 1 ? 's' : ''}`;
+                }
+
+                const position = exp.position || exp.title || 'Unknown Position';
+                const company = exp.company || 'Unknown Company';
+                const description = exp.description ? ` - ${exp.description.substring(0, 200)}` : '';
+                const isCurrent = !exp.ended || exp.ended === null;
+
+                return `${index + 1}. ${position} at ${company} (${duration}${isCurrent ? ', Current' : ''})${description}`;
+            }).join('\n');
+        };
+
+        // Enhanced helper to format skills
+        const formatProfileSkills = (skillsArray) => {
+            if (!skillsArray || !Array.isArray(skillsArray) || skillsArray.length === 0) {
+                return 'No skills data available';
+            }
+            return skillsArray.slice(0, 20).join(', '); // Limit to 20 skills for clarity
+        };
+
+        // Enhanced helper to format education
+        const formatProfileEducation = (educationArray) => {
+            if (!educationArray || !Array.isArray(educationArray) || educationArray.length === 0) {
+                return 'No education data available';
+            }
+
+            return educationArray.map((edu, index) => {
+                const institution = edu.institution || edu.school || 'Unknown Institution';
+                const degree = edu.degree || 'Unknown Degree';
+                const field = edu.field || edu.fieldOfStudy || '';
+                const years = edu.years || (edu.startYear && edu.endYear ? `${edu.startYear}-${edu.endYear}` : '');
+
+                return `${index + 1}. ${degree}${field ? ` in ${field}` : ''} from ${institution}${years ? ` (${years})` : ''}`;
+            }).join('\n');
+        };
+
+        // Prepare detailed profile summaries for analysis
+        const detailedProfiles = profiles.map((profile, index) => {
+            const experience = formatProfileExperience(profile.experience || []);
+            const skills = formatProfileSkills(profile.skills || []);
+            const education = formatProfileEducation(profile.education || []);
+
+            return {
+                profileIndex: index + 1,
+                fullName: profile.fullName || profile.name || 'Unknown Name',
+                gender: profile.gender || 'Not specified',
+                currentTitle: profile.currentTitle || profile.title || profile.headLine || 'Unknown Title',
+                currentCompany: profile.currentCompany || profile.company || 'Unknown Company',
+                location: profile.locations?.[0]?.name || profile.location || 'Unknown Location',
+                summary: profile.summary || profile.about || 'No summary available',
+                experience,
+                skills,
+                education,
+                totalExperience: profile.experience ? profile.experience.length : 0,
+                profileData: profile // Keep original for reference
+            };
+        });
+
+        // Create the system prompt for Gemini
+        const prompt = `You are an HR analyst evaluating candidates against job criteria. Analyze thoroughly using ONLY provided data.
+
+RULES:
+- A criterion is met (true) ONLY with clear evidence
+- Calculate experience durations precisely across ALL relevant positions
+- For gender criteria: Check the explicit "Gender:" field first. If not available, analyze the name only if you can confidently determine gender from the name alone. If uncertain, return "Not specified"
+- For SaaS experience, count ALL positions at SaaS companies (e.g., Snowflake = SaaS)
+- For account executive experience, include related roles like "Strategic Account Development"
+- Today's date: ${currentDate}
+
+GENDER ANALYSIS RULES:
+- If "Gender:" field is explicitly provided, use that value
+- If no "Gender:" field, analyze the name for clear gender indicators:
+  * Only use names that are overwhelmingly gender-specific across cultures (Sandra, Maria, Carolina, Jennifer, John, Michael, David, Robert, Susan, Linda)
+  * Be very cautious with names that might be unisex or culturally variable (Iman, Alex, Jordan, Taylor, Casey, etc.)
+  * When in doubt about cultural context or name variations, return "Not specified"
+- Name-based gender identification should only be used for universally recognized, non-ambiguous names
+- Be conservative - it's better to say "Not specified" than to guess incorrectly
+- Reserve gender identification only for names with clear, universal gender associations
+
+RESPONSE FORMAT:
+{
+  "profiles": [
+    {
+      "profileId": 1,
+      "breakdown": [
+        {
+          "criterion": "exact text",
+          "met": true/false,
+          "evidence": "specific evidence with calculations",
+          "reasoning": "brief explanation"
+        }
+      ],
+      "description": "summary of qualification level"
+    }
+  ]
+}
+
+Return valid JSON only.
+
+CANDIDATE PROFILES TO ANALYZE:
+
+${detailedProfiles.map(profile => `
+PROFILE ${profile.profileIndex}: ${profile.fullName}
+Gender: ${profile.gender}
+Current Position: ${profile.currentTitle} at ${profile.currentCompany}
+Location: ${profile.location}
+Summary: ${profile.summary}
+
+WORK EXPERIENCE:
+${profile.experience}
+
+SKILLS:
+${profile.skills}
+
+EDUCATION:
+${profile.education}
+
+Total Experience Entries: ${profile.totalExperience}
+---`).join('\n')}
+
+EVALUATION CRITERIA:
+${criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n')}
+
+Please analyze each profile against ALL criteria with detailed evidence and reasoning.`;
+
+        // Initialize Gemini AI
+        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
+        // Use tryGeminiWithFallback for better reliability
+        const { content, modelUsed } = await tryGeminiWithFallback(genAI, prompt);
+
+        console.log(`🔍 Raw Gemini response for profile analysis (${modelUsed}) - first 500 chars:`, content.substring(0, 500));
+
+        // Enhanced JSON parsing with better error handling
+        let analysisResults;
+        let cleanedContent = content.trim();
+
+        try {
+            // Remove leading "json" or similar prefixes
+            if (cleanedContent.toLowerCase().startsWith('json')) {
+                cleanedContent = cleanedContent.substring(4).trim();
+            }
+
+            // Remove markdown code block markers if present
+            cleanedContent = cleanedContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+            cleanedContent = cleanedContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+
+            // Try to extract JSON object using multiple strategies
+            let jsonMatch = null;
+
+            // Strategy 1: Look for complete JSON object with profiles array
+            jsonMatch = cleanedContent.match(/\{\s*"profiles"\s*:\s*\[[\s\S]*?\]\s*\}/);
+
+            if (!jsonMatch) {
+                // Strategy 2: Look for any complete JSON object
+                jsonMatch = cleanedContent.match(/\{[\s\S]*\}/);
+            }
+
+            if (!jsonMatch) {
+                // Strategy 3: Try to find just the profiles array and wrap it
+                const profilesArrayMatch = cleanedContent.match(/"profiles"\s*:\s*(\[[\s\S]*?\])/);
+                if (profilesArrayMatch) {
+                    jsonMatch = [`{"profiles": ${profilesArrayMatch[1]}}`];
+                }
+            }
+
+            if (jsonMatch) {
+                let jsonStr = jsonMatch[0];
+
+                // Fix common JSON issues
+                // Remove trailing commas before closing brackets/braces
+                jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+
+                // Ensure the JSON is complete - if it ends abruptly, try to close it
+                const openBraces = (jsonStr.match(/\{/g) || []).length;
+                const closeBraces = (jsonStr.match(/\}/g) || []).length;
+                const openBrackets = (jsonStr.match(/\[/g) || []).length;
+                const closeBrackets = (jsonStr.match(/\]/g) || []).length;
+
+                // Add missing closing braces/brackets
+                for (let i = 0; i < openBrackets - closeBrackets; i++) {
+                    jsonStr += ']';
+                }
+                for (let i = 0; i < openBraces - closeBraces; i++) {
+                    jsonStr += '}';
+                }
+
+                analysisResults = JSON.parse(jsonStr);
+            } else {
+                // Last resort: try parsing the entire cleaned content
+                analysisResults = JSON.parse(cleanedContent);
+            }
+        } catch (parseError) {
+            console.error('❌ JSON parsing failed for Gemini analysis results:', parseError.message);
+            console.error('Raw content:', content);
+            throw new Error(`Failed to parse analysis results from Gemini: ${parseError.message}`);
+        }
+
+        // Validate and enhance results
+        if (!analysisResults.profiles || !Array.isArray(analysisResults.profiles)) {
+            throw new Error('Invalid response format: missing profiles array');
+        }
+
+        // Ensure we have results for all profiles
+        if (analysisResults.profiles.length !== profiles.length) {
+            console.warn(`⚠️  Expected ${profiles.length} analysis results, got ${analysisResults.profiles.length}`);
+        }
+
+        // Validate each profile result
+        analysisResults.profiles.forEach((result, index) => {
+            if (!result.breakdown || !Array.isArray(result.breakdown)) {
+                console.warn(`⚠️  Profile ${index + 1} missing breakdown array`);
+                result.breakdown = [];
+            }
+
+            // Ensure we have evaluation for all criteria
+            if (result.breakdown.length !== criteria.length) {
+                console.warn(`⚠️  Profile ${index + 1} has ${result.breakdown.length} evaluations, expected ${criteria.length}`);
+            }
+
+            // Add default values for missing fields
+            result.breakdown.forEach((item, itemIndex) => {
+                if (!item.evidence) item.evidence = 'No specific evidence provided';
+                if (!item.reasoning) item.reasoning = 'Analysis incomplete';
+                if (typeof item.met !== 'boolean') {
+                    console.warn(`⚠️  Invalid 'met' value for criterion ${itemIndex + 1}, defaulting to false`);
+                    item.met = false;
+                }
+            });
+
+            if (!result.description) {
+                result.description = 'Analysis incomplete - please review individual criterion evaluations';
+            }
+        });
+
+        console.log(`✅ Gemini batch profile analysis completed successfully using ${modelUsed}`);
+        return analysisResults;
+
+    } catch (error) {
+        console.error('❌ Error analyzing profiles batch against criteria using Gemini:', error);
+
+        // Handle Gemini API errors
+        if (error.status) {
+            const status = error.status;
+            let message = 'Unknown Gemini API error';
+
+            if (status === 401) {
+                message = 'Invalid or expired Gemini API key';
+            } else if (status === 429) {
+                message = 'Gemini rate limit exceeded';
+            } else if (status === 503) {
+                message = 'Gemini service is temporarily unavailable';
+            } else if (status === 400) {
+                message = 'Bad request to Gemini API';
+            } else if (error.message) {
+                message = `Gemini API error: ${error.message}`;
+            }
+
+            console.error(`Gemini API error (${status}): ${message}`);
+        }
+
+        throw error;
+    }
+};
