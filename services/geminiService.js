@@ -291,6 +291,164 @@ ${filtersText}`;
     }
 };
 
+// Convert industry to ContactOut's accepted industry values using Gemini
+exports.convertToContactOutIndustry = async (industryInput) => {
+    try {
+        if (!GEMINI_API_KEY) {
+            throw new Error('Gemini API key is not configured');
+        }
+
+        if (!isValidGeminiKey(GEMINI_API_KEY)) {
+            throw new Error('Invalid Gemini API key format');
+        }
+
+        if (!industryInput || typeof industryInput !== 'string') {
+            return { primary: 'Information Technology & Services', secondary: 'Computer Software' };
+        }
+
+        console.log(`Converting industry to ContactOut format using Gemini: ${industryInput}`);
+        console.log(`Using Gemini API key: ${sanitizeApiKey(GEMINI_API_KEY)}`);
+
+        const contactOutIndustries = [
+            'Defense & Space', 'Computer Hardware', 'Computer Software', 'Computer Networking', 'Internet', 'Semiconductors', 'Telecommunications',
+            'Law Practice', 'Legal Services', 'Management Consulting', 'Biotechnology', 'Medical Practice', 'Hospital & Health Care', 'Pharmaceuticals',
+            'Veterinary', 'Medical Device', 'Cosmetics', 'Apparel & Fashion', 'Sporting Goods', 'Tobacco', 'Supermarkets', 'Food Production',
+            'Consumer Electronics', 'Consumer Goods', 'Furniture', 'Retail', 'Entertainment', 'Gambling & Casinos', 'Leisure, Travel & Tourism',
+            'Hospitality', 'Restaurants', 'Sports', 'Food & Beverages', 'Motion Pictures & Film', 'Broadcast Media', 'Museums & Institutions',
+            'Fine Art', 'Performing Arts', 'Recreational Facilities & Services', 'Banking', 'Insurance', 'Financial Services', 'Real Estate',
+            'Investment Banking', 'Investment Management', 'Accounting', 'Construction', 'Building Materials', 'Architecture & Planning',
+            'Civil Engineering', 'Aviation & Aerospace', 'Automotive', 'Chemicals', 'Machinery', 'Mining & Metals', 'Oil & Energy',
+            'Shipbuilding', 'Utilities', 'Textiles', 'Paper & Forest Products', 'Railroad Manufacture', 'Farming', 'Ranching', 'Dairy',
+            'Fishery', 'Primary/Secondary Education', 'Higher Education', 'Education Management', 'Research', 'Military', 'Legislative Office',
+            'Judiciary', 'International Affairs', 'Government Administration', 'Executive Office', 'Law Enforcement', 'Public Safety',
+            'Public Policy', 'Marketing & Advertising', 'Newspapers', 'Publishing', 'Printing', 'Information Services', 'Libraries',
+            'Environmental Services', 'Package/Freight Delivery', 'Individual & Family Services', 'Religious Institutions',
+            'Civic & Social Organization', 'Consumer Services', 'Transportation/Trucking/Railroad', 'Warehousing', 'Airlines/Aviation',
+            'Maritime', 'Information Technology & Services', 'Market Research', 'Public Relations & Communications', 'Design',
+            'Non-profit Organization Management', 'Fundraising', 'Program Development', 'Writing & Editing', 'Staffing & Recruiting',
+            'Professional Training & Coaching', 'Venture Capital & Private Equity', 'Political Organization', 'Translation & Localization',
+            'Computer Games', 'Events Services', 'Arts & Crafts', 'Electrical & Electronic Manufacturing', 'Online Media', 'Nanotechnology',
+            'Music', 'Logistics & Supply Chain', 'Plastics', 'Computer & Network Security', 'Wireless', 'Alternative Dispute Resolution',
+            'Security & Investigations', 'Facilities Services', 'Outsourcing/Offshoring', 'Health, Wellness & Fitness', 'Alternative Medicine',
+            'Media Production', 'Animation', 'Commercial Real Estate', 'Capital Markets', 'Think Tanks', 'Philanthropy', 'E-learning',
+            'Wholesale', 'Import & Export', 'Mechanical Or Industrial Engineering', 'Photography', 'Human Resources', 'Business Supplies & Equipment',
+            'Mental Health Care', 'Graphic Design', 'International Trade & Development', 'Wine & Spirits', 'Luxury Goods & Jewelry',
+            'Renewables & Environment', 'Glass, Ceramics & Concrete', 'Packaging & Containers', 'Industrial Automation', 'Government Relations'
+        ];
+
+        // Initialize Gemini AI
+        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
+        const prompt = `You are an industry classification assistant. Your task is to match user input to the TWO most relevant industries from the ContactOut predefined list, in order of priority.
+
+Input industry: "${industryInput}"
+
+ContactOut accepted industries:
+${contactOutIndustries.join(', ')}
+
+Rules:
+1. You MUST return exactly two industries as a JSON object with "primary" and "secondary" fields.
+2. The "primary" field must contain the most relevant industry match.
+3. The "secondary" field MUST contain the second most relevant industry match. It cannot be empty.
+4. If a closely related second option is not available, select a broader parent category from the list. For example, for "Industrial Automation", a good secondary choice is "Machinery".
+5. Do not return the same industry for both primary and secondary.
+6. Return ONLY the exact industry name from the ContactOut list above.
+7. If the input is "SaaS" or "Software as a Service", return "Computer Software" as primary.
+8. If the input is "Fintech" or "Financial Technology", return "Financial Services" as primary.
+9. If no close match exists, use "Information Technology & Services" as the primary.
+
+Return ONLY valid JSON in this format:
+{"primary": "Industry 1", "secondary": "Industry 2"}
+
+Industry input: ${industryInput}`;
+
+        // Use tryGeminiWithFallback for better reliability
+        const { content, modelUsed } = await tryGeminiWithFallback(genAI, prompt);
+
+        console.log(`Raw Gemini response for ContactOut industry conversion (${modelUsed}):`, content);
+
+        // Parse the JSON response
+        let result;
+        try {
+            // Clean the response - remove any leading/trailing text
+            let cleanedContent = content.trim();
+
+            // Remove markdown code block markers if present
+            cleanedContent = cleanedContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+            cleanedContent = cleanedContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+
+            // Try to extract JSON from the response
+            let jsonMatch = cleanedContent.match(/\{[^}]*"primary"[^}]*"secondary"[^}]*\}/);
+            if (!jsonMatch) {
+                jsonMatch = cleanedContent.match(/\{[\s\S]*\}/);
+            }
+
+            if (jsonMatch) {
+                result = JSON.parse(jsonMatch[0]);
+            } else {
+                result = JSON.parse(cleanedContent);
+            }
+        } catch (parseError) {
+            console.warn('JSON parsing error for ContactOut industry conversion:', parseError.message);
+            console.warn(`Response content: ${content.substring(0, 200)}...`);
+
+            // Return default fallback
+            return { primary: 'Information Technology & Services', secondary: 'Computer Software' };
+        }
+
+        const primary = result.primary || 'Information Technology & Services';
+        let secondary = result.secondary || '';
+
+        console.log(`ContactOut industry conversion (${modelUsed}): ${industryInput} → Primary: ${primary}, Secondary: ${secondary}`);
+
+        // Validate that the returned industries are in our accepted list
+        const validPrimary = contactOutIndustries.includes(primary) ? primary : 'Information Technology & Services';
+        let validSecondary = contactOutIndustries.includes(secondary) ? secondary : '';
+
+        // Fallback logic for secondary
+        if (!validSecondary || validSecondary === validPrimary) {
+            console.warn('ContactOut secondary industry was invalid, empty, or same as primary. Applying fallback.');
+            validSecondary = validPrimary !== 'Computer Software' ? 'Computer Software' : 'Information Technology & Services';
+        }
+
+        if (validPrimary !== primary) {
+            console.warn(`Gemini returned invalid ContactOut primary industry: ${primary}, using default`);
+        }
+
+        if (validSecondary !== secondary && secondary !== '') {
+            console.warn(`Gemini returned invalid ContactOut secondary industry: ${secondary}, using fallback`);
+        }
+
+        return { primary: validPrimary, secondary: validSecondary };
+
+    } catch (error) {
+        console.error('Error converting industry for ContactOut using Gemini:', error);
+
+        // Handle Gemini API errors but always return fallback
+        if (error.status) {
+            const status = error.status;
+            let message = 'Unknown Gemini API error';
+
+            if (status === 401) {
+                message = 'Invalid or expired Gemini API key';
+            } else if (status === 429) {
+                message = 'Gemini rate limit exceeded';
+            } else if (status === 503) {
+                message = 'Gemini service is temporarily unavailable';
+            } else if (status === 400) {
+                message = 'Bad request to Gemini API';
+            } else if (error.message) {
+                message = `Gemini API error: ${error.message}`;
+            }
+
+            console.error(`Gemini API error (${status}): ${message}`);
+        }
+
+        // Always return default fallback for ContactOut compatibility
+        return { primary: 'Information Technology & Services', secondary: 'Computer Software' };
+    }
+};
+
 // Clean up and standardize messy CSV data without filtering using Gemini
 exports.cleanupCsvProfiles = async (profiles) => {
     try {
