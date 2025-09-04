@@ -18,6 +18,67 @@ const { Readable } = require('stream');
 const path = require('path');
 const fs = require('fs');
 
+// Helper functions for searchLinkedInProfiles with Gemini primary + OpenAI fallback
+const generateIndustryVariationsWithFallback = async (industry, searchEngine = 'google') => {
+  try {
+    console.log(`🔄 Trying Gemini for industry variations: ${industry} (${searchEngine})`);
+    return await geminiService.generateIndustryVariations(industry, searchEngine);
+  } catch (geminiError) {
+    console.warn('⚠️ Gemini failed, trying OpenAI fallback for industry variations:', geminiError.message);
+    try {
+      return await openaiService.generateIndustryVariations(industry, searchEngine);
+    } catch (openaiError) {
+      console.error('❌ Both failed for industry variations:', openaiError.message);
+      return [];
+    }
+  }
+};
+
+const convertToRelevantIndustryWithFallback = async (industry) => {
+  try {
+    console.log(`🔄 Trying Gemini for industry conversion: ${industry}`);
+    return await geminiService.convertToRelevantIndustry(industry);
+  } catch (geminiError) {
+    console.warn('⚠️ Gemini failed, trying OpenAI fallback for industry conversion:', geminiError.message);
+    try {
+      return await openaiService.convertToRelevantIndustry(industry);
+    } catch (openaiError) {
+      console.error('❌ Both failed for industry conversion:', openaiError.message);
+      return { primary: 'Information Technology & Services', secondary: 'Computer Software' };
+    }
+  }
+};
+
+const convertToContactOutIndustryWithFallback = async (industryInput) => {
+  try {
+    console.log(`🔄 Trying Gemini for ContactOut industry conversion: ${industryInput}`);
+    return await geminiService.convertToContactOutIndustry(industryInput);
+  } catch (geminiError) {
+    console.warn('⚠️ Gemini failed, trying OpenAI fallback for ContactOut conversion:', geminiError.message);
+    try {
+      return await openaiService.convertToContactOutIndustry(industryInput);
+    } catch (openaiError) {
+      console.error('❌ Both failed for ContactOut conversion:', openaiError.message);
+      return { primary: 'Information Technology & Services', secondary: 'Computer Software' };
+    }
+  }
+};
+
+const extractProfilesDataBatchWithFallback = async (profiles, industries = [], titleFilters = [], locationFilters = []) => {
+  try {
+    console.log(`🔄 Trying Gemini for profile extraction (${profiles.length} profiles)`);
+    return await geminiService.extractProfilesDataBatch(profiles, industries, titleFilters, locationFilters);
+  } catch (geminiError) {
+    console.warn('⚠️ Gemini failed, trying OpenAI fallback for profile extraction:', geminiError.message);
+    try {
+      return await openaiService.extractProfilesDataBatch(profiles, industries, titleFilters, locationFilters);
+    } catch (openaiError) {
+      console.error('❌ Both failed for profile extraction:', openaiError.message);
+      return profiles.map(() => ({}));
+    }
+  }
+};
+
 // Parse job requirements from natural language query
 exports.parseJobRequirements = async (req, res) => {
   try {
@@ -332,12 +393,12 @@ exports.searchLinkedInProfiles = async (req, res) => {
     if (industries.length > 0) {
       // Generate variations for Google (multi-word allowed)
       const googleVariationsPromises = industries.map(industry =>
-        openaiService.generateIndustryVariations(industry, 'google')
+        generateIndustryVariationsWithFallback(industry, 'google')
       );
 
       // Generate variations for Brave (single-word only)
       const braveVariationsPromises = industries.map(industry =>
-        openaiService.generateIndustryVariations(industry, 'brave')
+        generateIndustryVariationsWithFallback(industry, 'brave')
       );
 
       // Wait for all industry variations to be generated
@@ -613,7 +674,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
     // Convert industry to the most relevant predefined industry if provided (needed for SignalHire and IcyPeas)
     let convertedIndustries = { primary: undefined, secondary: undefined };
     if ((includeSignalHire || includeIcypeas) && industries.length > 0) {
-      convertedIndustries = await openaiService.convertToRelevantIndustry(industries[0]);
+      convertedIndustries = await convertToRelevantIndustryWithFallback(industries[0]);
       console.log(`Industry conversion: ${industries[0]} → Primary: ${convertedIndustries.primary}, Secondary: ${convertedIndustries.secondary}`);
     }
 
@@ -939,7 +1000,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
         // Convert industry to ContactOut's accepted industry values
         let convertedContactOutIndustries = { primary: undefined, secondary: undefined };
         if (industries.length > 0) {
-          convertedContactOutIndustries = await openaiService.convertToContactOutIndustry(industries[0]);
+          convertedContactOutIndustries = await convertToContactOutIndustryWithFallback(industries[0]);
           console.log(`ContactOut industry conversion: ${industries[0]} → Primary: ${convertedContactOutIndustries.primary}, Secondary: ${convertedContactOutIndustries.secondary}`);
         }
 

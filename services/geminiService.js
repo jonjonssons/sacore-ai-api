@@ -951,78 +951,271 @@ exports.convertToRelevantIndustry = async (industry) => {
             throw new Error('Invalid Gemini API key format');
         }
 
+        if (!industry || typeof industry !== 'string') {
+            return { primary: 'Technology', secondary: 'Computer Software' }; // Return object for consistency
+        }
+
         console.log(`Converting industry "${industry}" to relevant predefined industry using Gemini`);
 
         // Initialize Gemini AI
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-        const prompt = `Convert the industry "${industry}" to the most relevant predefined industry category.
+        const predefinedIndustries = [
+            'Defense & Space',
+            'Computer Hardware',
+            'Computer Software',
+            'Computer Networking',
+            'Internet',
+            'Semiconductors',
+            'Telecommunications',
+            'Law Practice',
+            'Legal Services',
+            'Management Consulting',
+            'Biotechnology',
+            'Medical Practice',
+            'Hospital & Health Care',
+            'Pharmaceuticals',
+            'Veterinary',
+            'Medical Devices',
+            'Cosmetics',
+            'Apparel & Fashion',
+            'Sporting Goods',
+            'Tobacco',
+            'Supermarkets',
+            'Food Production',
+            'Consumer Electronics',
+            'Consumer Goods',
+            'Furniture',
+            'Retail',
+            'Entertainment',
+            'Gambling & Casinos',
+            'Leisure, Travel & Tourism',
+            'Hospitality',
+            'Restaurants',
+            'Sports',
+            'Food & Beverages',
+            'Motion Pictures and Film',
+            'Broadcast Media',
+            'Museums and Institutions',
+            'Fine Art',
+            'Performing Arts',
+            'Recreational Facilities and Services',
+            'Banking',
+            'Insurance',
+            'Financial Services',
+            'Real Estate',
+            'Investment Banking',
+            'Investment Management',
+            'Accounting',
+            'Construction',
+            'Building Materials',
+            'Architecture & Planning',
+            'Civil Engineering',
+            'Aviation & Aerospace',
+            'Automotive',
+            'Chemicals',
+            'Machinery',
+            'Mining & Metals',
+            'Oil & Energy',
+            'Shipbuilding',
+            'Utilities',
+            'Textiles',
+            'Paper & Forest Products',
+            'Railroad Manufacture',
+            'Farming',
+            'Ranching',
+            'Dairy',
+            'Fishery',
+            'Primary/Secondary Education',
+            'Higher Education',
+            'Education Management',
+            'Research',
+            'Military',
+            'Legislative Office',
+            'Judiciary',
+            'International Affairs',
+            'Government Administration',
+            'Executive Office',
+            'Law Enforcement',
+            'Public Safety',
+            'Public Policy',
+            'Marketing and Advertising',
+            'Newspapers',
+            'Publishing',
+            'Printing',
+            'Information Services',
+            'Libraries',
+            'Environmental Services',
+            'Package/Freight Delivery',
+            'Individual & Family Services',
+            'Religious Institutions',
+            'Civic & Social Organization',
+            'Consumer Services',
+            'Transportation/Trucking/Railroad',
+            'Warehousing',
+            'Airlines/Aviation',
+            'Maritime',
+            'Information Technology and Services',
+            'Market Research',
+            'Public Relations and Communications',
+            'Design',
+            'Nonprofit Organization Management',
+            'Fund-Raising',
+            'Program Development',
+            'Writing and Editing',
+            'Staffing and Recruiting',
+            'Professional Training & Coaching',
+            'Venture Capital & Private Equity',
+            'Political Organization',
+            'Translation and Localization',
+            'Computer Games',
+            'Events Services',
+            'Arts and Crafts',
+            'Electrical/Electronic Manufacturing',
+            'Online Media',
+            'Nanotechnology',
+            'Music',
+            'Logistics and Supply Chain',
+            'Plastics',
+            'Computer & Network Security',
+            'Wireless',
+            'Alternative Dispute Resolution',
+            'Security and Investigations',
+            'Facilities Services',
+            'Outsourcing/Offshoring',
+            'Health, Wellness and Fitness',
+            'Alternative Medicine',
+            'Media Production',
+            'Animation',
+            'Commercial Real Estate',
+            'Capital Markets',
+            'Think Tanks',
+            'Philanthropy',
+            'E-Learning',
+            'Wholesale',
+            'Import and Export',
+            'Mechanical or Industrial Engineering',
+            'Photography',
+            'Human Resources',
+            'Business Supplies and Equipment',
+            'Mental Health Care',
+            'Graphic Design',
+            'International Trade and Development',
+            'Wine and Spirits',
+            'Luxury Goods & Jewelry',
+            'Renewables & Environment',
+            'Glass, Ceramics & Concrete',
+            'Packaging and Containers',
+            'Industrial Automation',
+            'Government Relations'
+        ];
+
+        const prompt = `Convert the industry "${industry}" to the TWO most relevant predefined industry categories.
 
 Choose from these predefined categories:
-- Technology
-- Healthcare
-- Finance
-- Manufacturing
-- Retail
-- Education
-- Consulting
-- Marketing
-- Real Estate
-- Energy
-- Transportation
-- Entertainment
-- Government
-- Non-profit
-- Agriculture
-- Construction
-- Telecommunications
-- Pharmaceuticals
-- Automotive
-- Food & Beverage
+${predefinedIndustries.join(', ')}
 
-Return only the single most relevant category name, no other text.
+Rules:
+1. You MUST return exactly two industries as a JSON object with "primary" and "secondary" fields.
+2. The "primary" field must contain the most relevant industry match.
+3. The "secondary" field MUST contain the second most relevant industry match. It cannot be empty.
+4. If a closely related second option is not available, select a broader or related category from the list.
+5. Do not return the same industry for both primary and secondary.
+6. Return ONLY the exact industry name from the list above.
+7. If the input is "SaaS" or "Software as a Service", return "Technology" as primary.
+8. If the input is "Fintech" or "Financial Technology", return "Finance" as primary.
+9. If no close match exists, use "Technology" as the primary.
 
-Industry: ${industry}`;
+Return ONLY valid JSON in this format:
+{"primary": "Industry 1", "secondary": "Industry 2"}
+
+Industry input: ${industry}`;
 
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const content = response.text().trim();
 
-        console.log(`Converted industry "${industry}" to: ${content}`);
+        console.log(`Raw Gemini response for industry conversion:`, content);
 
-        return content;
+        // Parse the JSON response
+        let parsedResult;
+        try {
+            // Clean the response - remove any leading/trailing text
+            let cleanedContent = content.trim();
+
+            // Extract JSON if it's wrapped in other text
+            const jsonMatch = cleanedContent.match(/\{[^}]*\}/);
+            if (jsonMatch) {
+                cleanedContent = jsonMatch[0];
+            }
+
+            parsedResult = JSON.parse(cleanedContent);
+
+            // Validate that both primary and secondary are provided and valid
+            const validPrimary = predefinedIndustries.includes(parsedResult.primary) ? parsedResult.primary : 'Information Technology & Services';
+            const validSecondary = predefinedIndustries.includes(parsedResult.secondary) ? parsedResult.secondary : 'Computer Software';
+
+            if (validPrimary === validSecondary) {
+                // If they're the same, provide a different secondary
+                const alternativeSecondary = predefinedIndustries.find(ind => ind !== validPrimary) || 'Marketing';
+                return { primary: validPrimary, secondary: alternativeSecondary };
+            }
+
+            console.log(`Converted industry "${industry}" to: Primary: ${validPrimary}, Secondary: ${validSecondary}`);
+            return { primary: validPrimary, secondary: validSecondary };
+
+        } catch (parseError) {
+            console.warn(`Failed to parse Gemini JSON response: ${content}`, parseError);
+
+            // Try to extract a single industry from the response and create object
+            const singleIndustry = predefinedIndustries.find(ind =>
+                content.toLowerCase().includes(ind.toLowerCase())
+            ) || 'Technology';
+
+            const secondary = predefinedIndustries.find(ind =>
+                ind !== singleIndustry && (
+                    (singleIndustry === 'Technology' && ind === 'Computer Software') ||
+                    (singleIndustry === 'Finance' && ind === 'Banking') ||
+                    (singleIndustry === 'Healthcare' && ind === 'Pharmaceuticals')
+                )
+            ) || 'Marketing';
+
+            console.log(`Using fallback conversion for "${industry}": Primary: ${singleIndustry}, Secondary: ${secondary}`);
+            return { primary: singleIndustry, secondary: secondary };
+        }
+
     } catch (error) {
         console.error('Error converting industry using Gemini:', error.message);
 
-        // Return fallback mapping
+        // Return fallback mapping as object
         const industryLower = industry.toLowerCase();
         const fallbackMap = {
-            'fintech': 'Finance',
-            'saas': 'Technology',
-            'software': 'Technology',
-            'tech': 'Technology',
-            'healthcare': 'Healthcare',
-            'medical': 'Healthcare',
-            'finance': 'Finance',
-            'banking': 'Finance',
-            'manufacturing': 'Manufacturing',
-            'retail': 'Retail',
-            'education': 'Education',
-            'consulting': 'Consulting',
-            'marketing': 'Marketing',
-            'realestate': 'Real Estate',
-            'energy': 'Energy',
-            'transportation': 'Transportation',
-            'entertainment': 'Entertainment',
-            'government': 'Government',
-            'nonprofit': 'Non-profit',
-            'agriculture': 'Agriculture',
-            'construction': 'Construction',
-            'telecommunications': 'Telecommunications',
-            'pharmaceutical': 'Pharmaceuticals',
-            'automotive': 'Automotive',
-            'food': 'Food & Beverage'
+            'fintech': { primary: 'Finance', secondary: 'Technology' },
+            'saas': { primary: 'Technology', secondary: 'Computer Software' },
+            'software': { primary: 'Technology', secondary: 'Computer Software' },
+            'tech': { primary: 'Technology', secondary: 'Computer Software' },
+            'healthcare': { primary: 'Healthcare', secondary: 'Pharmaceuticals' },
+            'medical': { primary: 'Healthcare', secondary: 'Pharmaceuticals' },
+            'finance': { primary: 'Finance', secondary: 'Banking' },
+            'banking': { primary: 'Finance', secondary: 'Technology' },
+            'manufacturing': { primary: 'Manufacturing', secondary: 'Technology' },
+            'retail': { primary: 'Retail', secondary: 'Technology' },
+            'education': { primary: 'Education', secondary: 'Technology' },
+            'consulting': { primary: 'Consulting', secondary: 'Technology' },
+            'marketing': { primary: 'Marketing', secondary: 'Technology' },
+            'realestate': { primary: 'Real Estate', secondary: 'Finance' },
+            'energy': { primary: 'Energy', secondary: 'Technology' },
+            'transportation': { primary: 'Transportation', secondary: 'Technology' },
+            'entertainment': { primary: 'Entertainment', secondary: 'Technology' },
+            'government': { primary: 'Government', secondary: 'Technology' },
+            'nonprofit': { primary: 'Non-profit', secondary: 'Education' },
+            'agriculture': { primary: 'Agriculture', secondary: 'Technology' },
+            'construction': { primary: 'Construction', secondary: 'Technology' },
+            'telecommunications': { primary: 'Telecommunications', secondary: 'Technology' },
+            'pharmaceutical': { primary: 'Pharmaceuticals', secondary: 'Healthcare' },
+            'automotive': { primary: 'Automotive', secondary: 'Manufacturing' },
+            'food': { primary: 'Food & Beverage', secondary: 'Manufacturing' }
         };
 
         for (const [key, value] of Object.entries(fallbackMap)) {
@@ -1031,7 +1224,7 @@ Industry: ${industry}`;
             }
         }
 
-        return 'Technology'; // Default fallback
+        return { primary: 'Information Technology & Services', secondary: 'Computer Software' }; // Default fallback
     }
 };
 
