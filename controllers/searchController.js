@@ -19,6 +19,24 @@ const path = require('path');
 const fs = require('fs');
 
 // Helper functions for searchLinkedInProfiles with Gemini primary + OpenAI fallback
+
+// Helper function to get credit tier description
+function getCreditTierDescription(resultCount) {
+  if (resultCount < 100) return '< 100 results (10 credits)';
+  if (resultCount <= 199) return '100-199 results (20 credits)';
+  if (resultCount <= 299) return '200-299 results (30 credits)';
+  if (resultCount <= 399) return '300-399 results (40 credits)';
+  return '400+ results (50 credits)';
+}
+
+function calculateDynamicCredits(resultCount) {
+  if (resultCount < 100) return 10;
+  if (resultCount <= 199) return 20;
+  if (resultCount <= 299) return 30;
+  if (resultCount <= 399) return 40;
+  return 50; // 400 and above
+}
+
 const generateIndustryVariationsWithFallback = async (industry, searchEngine = 'google') => {
   try {
     console.log(`🔄 Trying Gemini for industry variations: ${industry} (${searchEngine})`);
@@ -520,24 +538,30 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
     // Search usage will be recorded after successful results are obtained
 
-    // Calculate credits based on included services
-    let totalCredits = 0;
+    // Dynamic credit system - check maximum possible charge upfront, charge based on actual results
+    let totalCredits = 0; // Will be calculated after we get results
+    const maxPossibleCredits = 50; // Maximum credits that could be charged
 
-    // Base charge: 20 credits for Google CSE search (if included)
+    // Check if user has enough credits for maximum possible charge before starting search
     if (includeGoogle || includeBrave) {
-      totalCredits += 50;
-    }
-
-    if (totalCredits > 0) {
       try {
-        const creditCheck = await creditService.checkCredits(req.user.userId, totalCredits);
-        console.log(`✅ Credit check passed:`, creditCheck);
+        await creditService.checkCredits(req.user.userId, maxPossibleCredits);
+        console.log(`✅ Credit check passed: User has sufficient credits (${maxPossibleCredits} max possible)`);
+        console.log('Using dynamic credit system - will charge based on actual results (10-50 credits)');
       } catch (creditError) {
         console.error('❌ Insufficient credits before search:', creditError);
         return res.status(403).json({
           error: 'Insufficient credits',
-          details: creditError.message,
-          requiredCredits: totalCredits
+          details: `You need at least ${maxPossibleCredits} credits to start a search.`,
+          requiredCredits: maxPossibleCredits,
+          pricingTiers: {
+            '< 100 results': 10,
+            '100-199 results': 20,
+            '200-299 results': 30,
+            '300-399 results': 40,
+            '400+ results': 50
+          },
+          creditError: creditError.message
         });
       }
     }
@@ -1879,10 +1903,73 @@ exports.searchLinkedInProfiles = async (req, res) => {
       result.source === 'contactout' ||
       (result.link && result.link.trim() !== "")
     );
-    // Only consume credits and record search usage after successful search operations
-    if (finalResults.length > 0) {
-      await creditService.consumeCredits(req.user.userId, 'SEARCH', totalCredits);
-      await usageService.recordSearch(req.user.userId);
+    // Dynamic credit calculation based on actual results count
+    if (finalResults.length > 0 && (includeGoogle || includeBrave)) {
+      // Calculate credits based on result count using the tier system
+      const dynamicCredits = calculateDynamicCredits(finalResults.length);
+      const resultCount = finalResults.length;
+
+      console.log(`💰 Charging ${dynamicCredits} credits for ${resultCount} results`);
+
+      try {
+        // Check if user has enough credits for the actual charge
+        await creditService.checkCredits(req.user.userId, dynamicCredits);
+        // Consume the calculated credits
+        await creditService.consumeCredits(req.user.userId, 'SEARCH', dynamicCredits);
+        await usageService.recordSearch(req.user.userId);
+
+        console.log(`✅ Successfully charged ${dynamicCredits} credits for ${resultCount} results`);
+        totalCredits = dynamicCredits; // Set for response meta
+      } catch (creditError) {
+        console.error('❌ Insufficient credits for final charge:', creditError);
+
+        // Return results with warning about insufficient credits
+        return res.status(StatusCodes.OK).json({
+          results: finalResults,
+          usage: await usageService.getSearchUsage(req.user.userId),
+          warning: `Search completed successfully but insufficient credits (${dynamicCredits} required for ${resultCount} results). Please top up your account.`,
+          creditShortage: {
+            required: dynamicCredits,
+            resultCount: resultCount,
+            tier: getCreditTierDescription(resultCount),
+            error: creditError.message
+          },
+          meta: {
+            totalResults: finalResults.length,
+            totalResultsBeforeFilter: resultsWithFractionalScores.length,
+            resultsAfterRelevanceFilter: filteredResults.length,
+            totalFetched: allResults.length,
+            uniqueResults: uniqueResults.length,
+            googleResults: googleResults.length,
+            braveResults: braveResults.length,
+            signalHireResults: signalHireResults.length,
+            icypeasResults: icypeasResults.length,
+            contactOutResults: contactOutResults.length,
+            csvImportResults: csvResults.length,
+            csvResultsInFinal: finalResults.filter(r => r.source === 'csv_import').length,
+            queriesUsed: queries.length,
+            braveQueriesUsed: includeBrave ? braveQueries.length : 0,
+            totalTiers: totalTieredSearches,
+            filters: filters,
+            includeSignalHire,
+            includeBrave,
+            includeIcypeas,
+            includeContactOut,
+            includeCsvImport,
+            csvImportMeta: csvMeta,
+            creditsCharged: 0, // No credits charged due to insufficient balance
+            creditsRequired: dynamicCredits,
+            creditTier: getCreditTierDescription(resultCount),
+            pricingModel: 'pay-per-results'
+          }
+        });
+      }
+    } else if (finalResults.length === 0) {
+      console.log(`🆓 No results returned - no credits charged`);
+      totalCredits = 0;
+    } else {
+      console.log(`🆓 CSV-only or non-search operation - no credits charged`);
+      totalCredits = 0;
     }
 
     console.log(`Final results: ${finalResults.length}/${filteredResults.length} results after removing empty LinkedIn URLs`);
@@ -1912,7 +1999,11 @@ exports.searchLinkedInProfiles = async (req, res) => {
         includeIcypeas,
         includeContactOut,
         includeCsvImport,
-        csvImportMeta: csvMeta
+        csvImportMeta: csvMeta,
+        // Credit information
+        creditsCharged: totalCredits,
+        creditTier: getCreditTierDescription(finalResults.length),
+        pricingModel: 'pay-per-results'
       }
     });
   } catch (error) {
