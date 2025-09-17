@@ -532,6 +532,216 @@ const addExtraSearchesToUser = async (userId, extraMonthlySearches, extraDailySe
   };
 };
 
+// Change user subscription plan (admin action)
+exports.changeUserPlan = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { plan, billingInterval = 'monthly', adjustCredits = true } = req.body;
+
+    // Validate plan
+    const validPlans = ['free', 'basic', 'explorer', 'pro'];
+    if (!validPlans.includes(plan)) {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Invalid plan. Must be one of: ' + validPlans.join(', ')
+      });
+    }
+
+    // Validate billing interval
+    const validIntervals = ['monthly', 'yearly'];
+    if (!validIntervals.includes(billingInterval)) {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Invalid billing interval. Must be monthly or yearly'
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(StatusCodes.NOT_FOUND).json({
+        error: 'User not found'
+      });
+    }
+
+    const originalPlan = user.subscription;
+    const originalCredits = user.credits;
+    const originalBillingInterval = user.billingInterval;
+
+    // Update user plan
+    user.subscription = plan;
+    user.billingInterval = billingInterval;
+    user.trialEnded = (plan !== 'free');
+
+    // 🆕 IMPORTANT: Set subscription tracking fields for credit reset system
+    if (!user.subscriptionStartDate) {
+      user.subscriptionStartDate = new Date(); // Set start date for new subscribers
+    }
+    user.lastCreditReset = new Date(); // Mark when credits were last reset
+
+    // Adjust credits if requested
+    let creditAdjustment = 0;
+    if (adjustCredits) {
+      let newCredits = 0;
+
+      // Set credits based on new plan
+      switch (plan) {
+        case 'basic':
+          newCredits = 500;
+          break;
+        case 'explorer':
+          newCredits = 1500;
+          break;
+        case 'pro':
+          newCredits = 6500;
+          break;
+        case 'free':
+          newCredits = 100;
+          break;
+      }
+
+      creditAdjustment = newCredits - originalCredits;
+      user.credits = newCredits;
+    }
+
+    await user.save();
+
+    // Create credit transaction if credits were adjusted
+    if (adjustCredits && creditAdjustment !== 0) {
+      const intervalText = billingInterval === 'yearly' ? ' (Yearly)' : ' (Monthly)';
+      await CreditTransaction.create({
+        user: userId,
+        amount: creditAdjustment,
+        type: 'ADMIN',
+        description: `Admin plan change: ${originalPlan} → ${plan}${intervalText}`,
+        balance: user.credits
+      });
+    }
+
+    res.status(StatusCodes.OK).json({
+      message: 'User plan changed successfully',
+      changes: {
+        plan: {
+          from: originalPlan,
+          to: plan
+        },
+        billingInterval: {
+          from: originalBillingInterval,
+          to: billingInterval
+        },
+        credits: adjustCredits ? {
+          from: originalCredits,
+          to: user.credits,
+          adjustment: creditAdjustment
+        } : 'unchanged'
+      },
+      user: {
+        _id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        subscription: user.subscription,
+        billingInterval: user.billingInterval,
+        credits: user.credits
+      }
+    });
+  } catch (error) {
+    console.error('Error changing user plan:', error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Failed to change user plan',
+      details: error.message
+    });
+  }
+};
+
+// Adjust user credits manually (admin action)
+exports.adjustUserCredits = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount, operation = 'set', reason } = req.body;
+
+    // Validate amount
+    if (typeof amount !== 'number' || amount < 0) {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Amount must be a positive number'
+      });
+    }
+
+    // Validate operation
+    const validOperations = ['set', 'add', 'subtract'];
+    if (!validOperations.includes(operation)) {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Operation must be one of: ' + validOperations.join(', ')
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(StatusCodes.NOT_FOUND).json({
+        error: 'User not found'
+      });
+    }
+
+    const originalCredits = user.credits;
+    let newCredits;
+    let transactionAmount;
+
+    // Perform the operation
+    switch (operation) {
+      case 'set':
+        newCredits = amount;
+        transactionAmount = amount - originalCredits;
+        break;
+      case 'add':
+        newCredits = originalCredits + amount;
+        transactionAmount = amount;
+        break;
+      case 'subtract':
+        newCredits = Math.max(0, originalCredits - amount);
+        transactionAmount = -(originalCredits - newCredits);
+        break;
+    }
+
+    user.credits = newCredits;
+    await user.save();
+
+    // Create credit transaction
+    await CreditTransaction.create({
+      user: userId,
+      amount: transactionAmount,
+      type: 'ADMIN',
+      description: reason || `Admin credit ${operation}: ${amount} credits`,
+      balance: newCredits
+    });
+
+    res.status(StatusCodes.OK).json({
+      message: 'User credits adjusted successfully',
+      operation: {
+        type: operation,
+        amount: amount,
+        reason: reason || 'No reason provided'
+      },
+      credits: {
+        from: originalCredits,
+        to: newCredits,
+        change: transactionAmount
+      },
+      user: {
+        _id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        credits: user.credits
+      }
+    });
+  } catch (error) {
+    console.error('Error adjusting user credits:', error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Failed to adjust user credits',
+      details: error.message
+    });
+  }
+};
+
 // Get dashboard overview for admin
 exports.getDashboardOverview = async (req, res) => {
   try {

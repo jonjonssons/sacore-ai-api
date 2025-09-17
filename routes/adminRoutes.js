@@ -30,4 +30,8 @@ router.patch('/users/:userId', adminController.updateUser);
 // New endpoint for adding extra searches
 router.post('/users/:userId/add-searches', adminController.addExtraSearches);
 
+// New endpoints for plan management
+router.patch('/users/:userId/plan', adminController.changeUserPlan);
+router.patch('/users/:userId/credits', adminController.adjustUserCredits);
+
 module.exports = router;

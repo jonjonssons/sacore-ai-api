@@ -71,6 +71,14 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: null,
   },
+  subscriptionStartDate: {
+    type: Date,
+    default: null,
+  },
+  lastCreditReset: {
+    type: Date,
+    default: null,
+  },
   hasSeenOnboardingVideo: {
     type: Boolean,
     default: false,

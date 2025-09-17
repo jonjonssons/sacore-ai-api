@@ -4,6 +4,83 @@ const { Headers } = require('node-fetch');
 global.fetch = fetch;
 global.Headers = Headers;
 
+// Add missing Node.js polyfills for googleapis library (PRODUCTION FIX)
+if (!global.Blob) {
+  global.Blob = class Blob {
+    constructor(chunks, options = {}) {
+      const { type = '' } = options;
+      this.size = 0;
+      this.type = type;
+      this._chunks = chunks || [];
+      if (chunks) {
+        for (const chunk of chunks) {
+          if (typeof chunk === 'string') {
+            this.size += Buffer.byteLength(chunk, 'utf8');
+          } else if (chunk instanceof Buffer) {
+            this.size += chunk.length;
+          } else if (chunk instanceof ArrayBuffer) {
+            this.size += chunk.byteLength;
+          }
+        }
+      }
+    }
+
+    text() {
+      return Promise.resolve(
+        this._chunks.map(chunk =>
+          typeof chunk === 'string' ? chunk : chunk.toString()
+        ).join('')
+      );
+    }
+
+    arrayBuffer() {
+      const chunks = this._chunks.map(chunk => {
+        if (typeof chunk === 'string') {
+          return Buffer.from(chunk, 'utf8');
+        } else if (chunk instanceof Buffer) {
+          return chunk;
+        } else if (chunk instanceof ArrayBuffer) {
+          return Buffer.from(chunk);
+        }
+        return Buffer.from(String(chunk), 'utf8');
+      });
+      return Promise.resolve(Buffer.concat(chunks).buffer);
+    }
+  };
+}
+
+
+
+if (!global.FormData) {
+  global.FormData = class FormData {
+    constructor() {
+      this._data = new Map();
+    }
+    append(name, value) {
+      if (!this._data.has(name)) {
+        this._data.set(name, []);
+      }
+      this._data.get(name).push(value);
+    }
+    get(name) {
+      const values = this._data.get(name);
+      return values ? values[0] : null;
+    }
+    getAll(name) {
+      return this._data.get(name) || [];
+    }
+  };
+}
+
+if (!global.ReadableStream) {
+  global.ReadableStream = class ReadableStream {
+    constructor(source) {
+      this._source = source || {};
+    }
+  };
+}
+
+
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
   // Optionally, you can decide to exit the process or keep it alive
@@ -46,7 +123,7 @@ const notFoundMiddleware = require('./middleware/not-found');
 const errorHandlerMiddleware = require('./middleware/error-handler');
 const debugLogger = require('./middleware/debugLogger');
 const { handleWebhook } = require('./controllers/stripeController');
-
+const { startScheduler } = require('./services/scheduleProcessor');
 
 
 const app = express();
@@ -54,6 +131,9 @@ const PORT = process.env.PORT || 7230;
 
 // Connect to MongoDB
 connectDB();
+
+// Start the campaign scheduler
+startScheduler();
 
 // Middleware
 app.use(cors({
