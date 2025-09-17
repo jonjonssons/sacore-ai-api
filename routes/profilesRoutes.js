@@ -21,4 +21,7 @@ router.put('/:id', authenticateUser, profilesController.updateProfile);
 // Delete a profile by id
 router.delete('/:id', authenticateUser, profilesController.deleteProfile);
 
+// Delete multiple profiles by ids
+router.delete('/', authenticateUser, profilesController.deleteMultipleProfiles);
+
 module.exports = router;

@@ -123,6 +123,10 @@ exports.updateProfile = async (req, res) => {
         const { id } = req.params;
         const updateData = req.body;
 
+        console.log('=== PROFILE UPDATE DEBUG ===');
+        console.log('Profile ID:', id);
+        console.log('Update data received:', JSON.stringify(updateData, null, 2));
+
         const profile = await Profiles.findById(id);
         if (!profile) {
             return res.status(404).json({ error: 'Profile not found' });
@@ -134,12 +138,101 @@ exports.updateProfile = async (req, res) => {
             return res.status(403).json({ error: 'Access denied' });
         }
 
-        Object.assign(profile, updateData);
+        // Prepare validated update object
+        const validatedUpdate = {};
+
+        // Handle basic profile fields
+        if (updateData.name !== undefined) {
+            validatedUpdate.name = updateData.name;
+        }
+
+        if (updateData.title !== undefined) {
+            validatedUpdate.title = updateData.title;
+        }
+
+        if (updateData.company !== undefined) {
+            validatedUpdate.company = updateData.company;
+        }
+
+        if (updateData.location !== undefined) {
+            validatedUpdate.location = updateData.location;
+        }
+
+        if (updateData.linkedinUrl !== undefined) {
+            validatedUpdate.linkedinUrl = updateData.linkedinUrl;
+        }
+
+        if (updateData.email !== undefined) {
+            validatedUpdate.email = updateData.email;
+        }
+
+        // Handle UID and SignalHire data
+        if (updateData.uid !== undefined) {
+            validatedUpdate.uid = updateData.uid;
+        }
+
+        if (updateData.signalhireData !== undefined) {
+            validatedUpdate.signalhireData = updateData.signalhireData;
+        }
+
+        // Handle analysis data - transform from your payload structure
+        if (updateData.analysisScore !== undefined ||
+            updateData.analysisDescription !== undefined ||
+            updateData.analysisBreakdown !== undefined) {
+
+            validatedUpdate.analysis = {
+                ...profile.analysis, // Preserve existing analysis data
+                score: updateData.analysisScore,
+                description: updateData.analysisDescription,
+                breakdown: updateData.analysisBreakdown,
+                updatedAt: new Date()
+            };
+        }
+
+        // Handle nested analysis data from enrichedData
+        if (updateData.analysis?.enrichedData) {
+            validatedUpdate.signalhireData = updateData.analysis.enrichedData;
+
+            // Extract UID if available
+            if (updateData.analysis.enrichedData.uid) {
+                validatedUpdate.uid = updateData.analysis.enrichedData.uid;
+            }
+        }
+
+        // Handle relevance score
+        if (updateData.relevanceScore !== undefined) {
+            validatedUpdate.relevanceScore = updateData.relevanceScore;
+        }
+
+        // Handle matched categories
+        if (updateData.matchedCategories !== undefined) {
+            validatedUpdate.matchedCategories = updateData.matchedCategories;
+        }
+
+        if (updateData.matchedCategoriesValue !== undefined) {
+            validatedUpdate.matchedCategoriesValue = updateData.matchedCategoriesValue;
+        }
+
+        console.log('Validated update object:', JSON.stringify(validatedUpdate, null, 2));
+
+        // Apply updates
+        Object.assign(profile, validatedUpdate);
         await profile.save();
 
-        res.json(profile);
+        console.log('Profile updated successfully:', profile._id);
+
+        res.json({
+            success: true,
+            message: 'Profile updated successfully',
+            profile
+        });
+
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error updating profile:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
     }
 };
 
@@ -160,9 +253,87 @@ exports.deleteProfile = async (req, res) => {
             return res.status(403).json({ error: 'Access denied' });
         }
 
-        await profile.remove();
+        await profile.deleteOne();
         res.json({ message: 'Profile deleted successfully' });
     } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// Delete multiple profiles by ids
+exports.deleteMultipleProfiles = async (req, res) => {
+    try {
+        const userId = req.user.userId;
+        const { profileIds } = req.body;
+
+        // Validate input
+        if (!Array.isArray(profileIds) || profileIds.length === 0) {
+            return res.status(400).json({
+                error: 'profileIds must be a non-empty array'
+            });
+        }
+
+        // Find all profiles to delete
+        const profiles = await Profiles.find({
+            _id: { $in: profileIds }
+        });
+
+        if (profiles.length === 0) {
+            return res.status(404).json({ error: 'No profiles found' });
+        }
+
+        // Get unique project IDs from the profiles
+        const projectIds = [...new Set(profiles.map(profile => profile.projectId.toString()))];
+
+        // Verify all projects belong to the user
+        const userProjects = await Projects.find({
+            _id: { $in: projectIds },
+            userId
+        }).select('_id');
+
+        const userProjectIds = userProjects.map(project => project._id.toString());
+
+        // Check if user owns all the projects
+        const unauthorizedProjects = projectIds.filter(projectId =>
+            !userProjectIds.includes(projectId)
+        );
+
+        if (unauthorizedProjects.length > 0) {
+            return res.status(403).json({
+                error: 'Access denied: Some profiles belong to projects you do not own'
+            });
+        }
+
+        // Filter profiles that actually exist and belong to user's projects
+        const validProfileIds = profiles
+            .filter(profile => userProjectIds.includes(profile.projectId.toString()))
+            .map(profile => profile._id);
+
+        if (validProfileIds.length === 0) {
+            return res.status(403).json({
+                error: 'No valid profiles found that you have permission to delete'
+            });
+        }
+
+        // Delete the profiles
+        const deleteResult = await Profiles.deleteMany({
+            _id: { $in: validProfileIds }
+        });
+
+        const notFoundCount = profileIds.length - profiles.length;
+        const unauthorizedCount = profiles.length - validProfileIds.length;
+
+        res.json({
+            message: 'Profiles deletion completed',
+            deleted: deleteResult.deletedCount,
+            requested: profileIds.length,
+            notFound: notFoundCount,
+            unauthorized: unauthorizedCount,
+            success: deleteResult.deletedCount > 0
+        });
+
+    } catch (error) {
+        console.error('Error in deleteMultipleProfiles:', error);
         res.status(500).json({ error: error.message });
     }
 };
