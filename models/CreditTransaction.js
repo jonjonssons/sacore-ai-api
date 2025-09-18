@@ -12,7 +12,7 @@ const CreditTransactionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['INITIAL', 'TOPUP', 'USAGE', 'MONTHLY_RESET', 'PLAN_CHANGE', 'ADMIN'],
+    enum: ['INITIAL', 'TOPUP', 'USAGE', 'MONTHLY_RESET', 'MONTHLY_ROLLOVER', 'ANNUAL_RESET', 'PLAN_CHANGE', 'ADMIN'],
     required: true
   },
   description: {

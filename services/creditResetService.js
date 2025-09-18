@@ -10,9 +10,9 @@ const PLAN_CREDITS = {
 };
 
 /**
- * Check and reset credits for yearly users based on their individual subscription dates
+ * Check and reset credits with rollover logic for yearly and monthly plans
  */
-const checkAndResetYearlyUserCredits = async () => {
+const checkAndResetUserCredits = async () => {
     try {
         console.log('🔄 Checking users for scheduler-based credit resets...');
 
@@ -62,39 +62,7 @@ const checkAndResetYearlyUserCredits = async () => {
                 const overdue = daysSinceLastReset >= 30; // More than 30 days since last reset
 
                 if (shouldReset || overdue) {
-                    const originalCredits = user.credits;
-                    const planCredits = PLAN_CREDITS[user.subscription] || 100;
-
-                    // Log expired credits if any
-                    if (originalCredits > 0) {
-                        await CreditTransaction.create({
-                            user: user._id,
-                            amount: -originalCredits,
-                            type: 'MONTHLY_RESET',
-                            description: `Monthly reset (${user.billingInterval.charAt(0).toUpperCase() + user.billingInterval.slice(1)} Plan) - ${originalCredits} unused credits expired`,
-                            balance: 0,
-                            createdAt: new Date()
-                        });
-                    }
-
-                    // Reset to plan amount
-                    user.credits = planCredits;
-                    user.lastCreditReset = new Date();
-                    await user.save();
-
-                    // Log new credits
-                    await CreditTransaction.create({
-                        user: user._id,
-                        amount: planCredits,
-                        type: 'MONTHLY_RESET',
-                        description: `Monthly reset (${user.billingInterval.charAt(0).toUpperCase() + user.billingInterval.slice(1)} Plan) - ${planCredits} fresh credits allocated`,
-                        balance: planCredits,
-                        createdAt: new Date()
-                    });
-
-                    const resetReason = overdue ? 'OVERDUE' : 'SCHEDULED';
-                    const userType = user.stripeCustomerId ? 'Stripe' : 'Admin';
-                    console.log(`✅ User ${user.email} [${userType} ${user.billingInterval}] (${resetReason}): ${originalCredits} → ${planCredits} credits`);
+                    await processUserCreditReset(user, overdue ? 'OVERDUE' : 'SCHEDULED');
                     resetCount++;
                 }
 
@@ -120,6 +88,98 @@ const checkAndResetYearlyUserCredits = async () => {
     }
 };
 
+/**
+ * Process individual user credit reset with rollover logic
+ * - Yearly plans: Always rollover credits every month
+ * - Monthly plans: Rollover only for first month, then reset
+ */
+const processUserCreditReset = async (user, resetReason) => {
+    const originalCredits = user.credits;
+    const planCredits = PLAN_CREDITS[user.subscription] || 100;
+    const today = new Date();
+
+    if (user.billingInterval === 'yearly') {
+        // YEARLY PLANS: Always rollover credits every month
+
+        const newTotalCredits = originalCredits + planCredits;
+        user.credits = newTotalCredits;
+        user.lastCreditReset = today;
+        await user.save();
+
+        // Log rollover transaction
+        await CreditTransaction.create({
+            user: user._id,
+            amount: planCredits,
+            type: 'MONTHLY_ROLLOVER',
+            description: `Monthly rollover (Yearly Plan) - ${planCredits} credits added to existing ${originalCredits}`,
+            balance: newTotalCredits,
+            createdAt: today
+        });
+
+        const userType = user.stripeCustomerId ? 'Stripe' : 'Admin';
+        console.log(`✅ User ${user.email} [${userType} yearly] (${resetReason}): ${originalCredits} + ${planCredits} = ${newTotalCredits} credits (ROLLOVER)`);
+
+    } else {
+        // MONTHLY PLANS: Rollover only for the first month, then reset
+
+        if (!user.hasUsedMonthlyRollover) {
+            // First month after subscription - ROLLOVER
+            const newTotalCredits = originalCredits + planCredits;
+            user.credits = newTotalCredits;
+            user.hasUsedMonthlyRollover = true; // Mark rollover as used
+            user.lastCreditReset = today;
+            await user.save();
+
+            // Log rollover transaction
+            await CreditTransaction.create({
+                user: user._id,
+                amount: planCredits,
+                type: 'MONTHLY_ROLLOVER',
+                description: `First month rollover (Monthly Plan) - ${planCredits} credits added to existing ${originalCredits}`,
+                balance: newTotalCredits,
+                createdAt: today
+            });
+
+            const userType = user.stripeCustomerId ? 'Stripe' : 'Admin';
+            console.log(`✅ User ${user.email} [${userType} monthly] (${resetReason}): ${originalCredits} + ${planCredits} = ${newTotalCredits} credits (FIRST ROLLOVER)`);
+
+        } else {
+            // Subsequent months - RESET (expire unused credits)
+
+            // Log expired credits if any
+            if (originalCredits > 0) {
+                await CreditTransaction.create({
+                    user: user._id,
+                    amount: -originalCredits,
+                    type: 'MONTHLY_RESET',
+                    description: `Monthly reset (Monthly Plan) - ${originalCredits} unused credits expired`,
+                    balance: 0,
+                    createdAt: today
+                });
+            }
+
+            // Reset to plan amount
+            user.credits = planCredits;
+            user.lastCreditReset = today;
+            await user.save();
+
+            // Log new credits
+            await CreditTransaction.create({
+                user: user._id,
+                amount: planCredits,
+                type: 'MONTHLY_RESET',
+                description: `Monthly reset (Monthly Plan) - ${planCredits} fresh credits allocated`,
+                balance: planCredits,
+                createdAt: today
+            });
+
+            const userType = user.stripeCustomerId ? 'Stripe' : 'Admin';
+            console.log(`✅ User ${user.email} [${userType} monthly] (${resetReason}): ${originalCredits} → ${planCredits} credits (RESET)`);
+        }
+    }
+};
+
 module.exports = {
-    checkAndResetYearlyUserCredits
+    checkAndResetUserCredits,
+    processUserCreditReset
 };

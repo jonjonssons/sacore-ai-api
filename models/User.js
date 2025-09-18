@@ -95,6 +95,11 @@ const UserSchema = new mongoose.Schema({
   resetPasswordCodeExpires: {
     type: Date,
     default: null,
+  },
+  // Track if user has already used their one-time rollover (monthly plans only)
+  hasUsedMonthlyRollover: {
+    type: Boolean,
+    default: false,
   }
 });
 

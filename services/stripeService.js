@@ -279,53 +279,72 @@ const handleInvoicePaid = async (invoice) => {
 
   // Different credit handling based on billing interval
   if (billingInterval === 'yearly') {
-    // YEARLY PLANS: Reset credits (same as monthly), NOT accumulate
-
+    // YEARLY PLANS: Annual renewal - Reset all credits (this is the actual yearly billing)
+    
     // Log expired credits if any
     if (originalCredits > 0) {
       await CreditTransaction.create({
         user: user._id,
         amount: -originalCredits,
-        type: 'MONTHLY_RESET',
-        description: `Yearly renewal - ${originalCredits} unused credits expired`,
+        type: 'ANNUAL_RESET',
+        description: `Annual renewal - ${originalCredits} unused credits expired`,
         balance: 0,
         createdAt: new Date()
       });
-      console.log(`User ${user.email} yearly renewal: ${originalCredits} unused credits expired.`);
+      console.log(`User ${user.email} annual renewal: ${originalCredits} unused credits expired.`);
     }
 
-    // Reset to plan amount (FIXED: was user.credits += planCredits)
-    user.credits = planCredits; // ✅ FIXED: Reset instead of accumulate
-    newCredits = user.credits;
-    transactionAmount = planCredits;
-    transactionType = 'PLAN_CHANGE';
-    transactionDescription = `Plan renewed: ${planName.charAt(0).toUpperCase() + planName.slice(1)} (Yearly) - Credits reset to ${planCredits}`;
-
-    console.log(`User ${user.email} yearly subscription renewed. Plan: ${planName}. Credits reset to ${planCredits}.`);
-  } else {
-    // MONTHLY PLANS: Reset credits to plan amount (no rollover)
-
-    // Log expired credits if any
-    if (originalCredits > 0) {
-      await CreditTransaction.create({
-        user: user._id,
-        amount: -originalCredits,
-        type: 'MONTHLY_RESET',
-        description: `Monthly renewal - ${originalCredits} unused credits expired`,
-        balance: 0,
-        createdAt: new Date()
-      });
-      console.log(`User ${user.email} monthly renewal: ${originalCredits} unused credits expired.`);
-    }
-
-    // Set new credits
+    // Reset to plan amount for annual renewal and reset rollover flag
     user.credits = planCredits;
+    user.hasUsedMonthlyRollover = false; // Reset for new year
     newCredits = user.credits;
     transactionAmount = planCredits;
     transactionType = 'PLAN_CHANGE';
-    transactionDescription = `Plan renewed: ${planName.charAt(0).toUpperCase() + planName.slice(1)} (Monthly) - Credits reset to ${planCredits}`;
+    transactionDescription = `Plan renewed: ${planName.charAt(0).toUpperCase() + planName.slice(1)} (Annual) - Credits reset to ${planCredits}`;
 
-    console.log(`User ${user.email} monthly subscription renewed. Plan: ${planName}. Credits reset to ${planCredits}.`);
+    console.log(`User ${user.email} annual subscription renewed. Plan: ${planName}. Credits reset to ${planCredits}.`);
+
+  } else {
+    // MONTHLY PLANS: Rollover only for first month, then reset
+    
+    if (!user.hasUsedMonthlyRollover) {
+      // First month - ROLLOVER
+      const newTotalCredits = originalCredits + planCredits;
+      user.credits = newTotalCredits;
+      user.hasUsedMonthlyRollover = true;
+      
+      newCredits = user.credits;
+      transactionAmount = planCredits;
+      transactionType = 'PLAN_CHANGE';
+      transactionDescription = `Plan renewed: ${planName.charAt(0).toUpperCase() + planName.slice(1)} (Monthly) - ${planCredits} credits added to existing ${originalCredits}`;
+
+      console.log(`User ${user.email} monthly subscription renewed (FIRST ROLLOVER). Plan: ${planName}. ${originalCredits} + ${planCredits} = ${newTotalCredits} credits.`);
+
+    } else {
+      // Subsequent months - RESET
+      
+      // Log expired credits if any
+      if (originalCredits > 0) {
+        await CreditTransaction.create({
+          user: user._id,
+          amount: -originalCredits,
+          type: 'MONTHLY_RESET',
+          description: `Monthly renewal - ${originalCredits} unused credits expired`,
+          balance: 0,
+          createdAt: new Date()
+        });
+        console.log(`User ${user.email} monthly renewal: ${originalCredits} unused credits expired.`);
+      }
+
+      // Set new credits
+      user.credits = planCredits;
+      newCredits = user.credits;
+      transactionAmount = planCredits;
+      transactionType = 'PLAN_CHANGE';
+      transactionDescription = `Plan renewed: ${planName.charAt(0).toUpperCase() + planName.slice(1)} (Monthly) - Credits reset to ${planCredits}`;
+
+      console.log(`User ${user.email} monthly subscription renewed (RESET). Plan: ${planName}. Credits reset to ${planCredits}.`);
+    }
   }
 
   // Also update the user's subscription info to ensure it's in sync with Stripe.
