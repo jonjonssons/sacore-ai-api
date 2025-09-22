@@ -121,7 +121,12 @@ exports.updateProfile = async (req, res) => {
     try {
         const userId = req.user.userId;
         const { id } = req.params;
-        const updateData = req.body;
+        // Handle both single object and array input
+        let updateData = req.body;
+        if (Array.isArray(updateData)) {
+            updateData = updateData[0]; // Take the first item if it's an array
+            console.log('Array input detected, using first item for update');
+        }
 
         console.log('=== PROFILE UPDATE DEBUG ===');
         console.log('Profile ID:', id);
