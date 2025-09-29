@@ -2,6 +2,11 @@ const jwt = require('jsonwebtoken');
 const { UnauthenticatedError, ForbiddenError } = require('../errors');
 const User = require('../models/User');
 
+const HARDCODED_ADMIN_USER_IDS = [
+  '6880bd21c5f91fe8fb3153d7',
+  '687f290cdbaa807b7a3940b9'
+];
+
 const authenticateUser = async (req, res, next) => {
   // Check for authorization header
   const authHeader = req.headers.authorization;
@@ -14,11 +19,14 @@ const authenticateUser = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const payload = jwt.verify(token, process.env.JWT_SECRET);
 
+    // Check if user is hardcoded admin
+    const isHardcodedAdmin = HARDCODED_ADMIN_USER_IDS.includes(payload.userId);
+
     // Attach user to request object
     req.user = {
       userId: payload.userId,
       name: payload.name,
-      role: payload.role
+      role: isHardcodedAdmin ? 'admin' : payload.role // Force admin role
     };
 
     next();
