@@ -51,7 +51,7 @@ exports.filterProfilesFromCsv = async (profiles, filters) => {
 
         // Initialize Gemini AI
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         // Process in batches to avoid API limits
         const batchSize = 40; // Gemini typically handles larger batches well
@@ -465,7 +465,7 @@ exports.cleanupCsvProfiles = async (profiles) => {
 
         // Initialize Gemini AI
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         // Process in batches to avoid API limits
         const batchSize = 40;
@@ -763,7 +763,7 @@ exports.parseJobRequirements = async (query) => {
 
         // Initialize Gemini AI
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         const prompt = `You are a multilingual assistant trained to extract job-related data from user queries.
 
@@ -855,7 +855,7 @@ exports.generateIndustryVariations = async (industry, searchEngine = 'google') =
 
         // Initialize Gemini AI
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         let prompt;
         if (searchEngine === 'brave') {
@@ -959,7 +959,7 @@ exports.convertToRelevantIndustry = async (industry) => {
 
         // Initialize Gemini AI
         const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
         const predefinedIndustries = [
             'Defense & Space',
@@ -1228,7 +1228,7 @@ Industry input: ${industry}`;
     }
 };
 
-const tryGeminiWithFallback = async (genAI, prompt, primaryModel = 'gemini-2.5-pro', fallbackModel = 'gemini-2.5-pro') => {
+const tryGeminiWithFallback = async (genAI, prompt, primaryModel = 'gemini-2.5-flash', fallbackModel = 'gemini-2.5-flash') => {
     let lastError = null;
 
     // Try primary model first (gemini-1.5-pro)
