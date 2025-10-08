@@ -1287,8 +1287,8 @@ exports.searchLinkedInProfiles = async (req, res) => {
     // Process Google results with OpenAI extraction
     let processedGoogleResults = [];
     if (googleResultsOnly.length > 0) {
-      const batchSize = 40;
-      const concurrencyLimit = 8;
+      const batchSize = 60;
+      const concurrencyLimit = 12;
 
       const batches = [];
       for (let i = 0; i < googleResultsOnly.length; i += batchSize) {
@@ -1388,8 +1388,8 @@ exports.searchLinkedInProfiles = async (req, res) => {
     // Process Brave results with OpenAI extraction (similar to Google)
     let processedBraveResults = [];
     if (braveResultsOnly.length > 0) {
-      const batchSize = 40;
-      const concurrencyLimit = 8;
+      const batchSize = 60;
+      const concurrencyLimit = 12;
 
       const batches = [];
       for (let i = 0; i < braveResultsOnly.length; i += batchSize) {
