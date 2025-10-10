@@ -3,7 +3,7 @@
  */
 
 // API configuration
-const ICYPEAS_API_KEY = process.env.ICYPEAS_API_KEY || 'b16d5527eaff4db5bbd1087b401b66d82aeeec4447a24bda8e70923d0bed7957';
+const ICYPEAS_API_KEY = process.env.ICYPEAS_API_KEY || 'b3c90935e8c3408a9d1f0dc5e081b89ec9b335388ac64ffa884471d42e41a7a2';
 const ICYPEAS_BASE_URL = 'https://app.icypeas.com/api';
 
 // Check available credits (if IcyPeas has such endpoint)
