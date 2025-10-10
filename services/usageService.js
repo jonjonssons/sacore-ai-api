@@ -12,11 +12,11 @@ const SUBSCRIPTION_LIMITS = {
         monthlySearches: 10,
         dailySearches: 5,
     },
-    pro: {
+    explorer: {
         monthlySearches: 25,
         dailySearches: 7,
     },
-    enterprise: {
+    pro: {
         monthlySearches: 50,
         dailySearches: 10,
     },
