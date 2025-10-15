@@ -10,6 +10,7 @@ router.post('/login', authController.login);
 router.get('/onboarding-status', authenticateUser, authController.getOnboardingStatus);
 router.post('/onboarding-status', authenticateUser, authController.updateOnboardingStatus);
 router.post('/refresh-token', authController.refreshToken);
+router.get('/verify', authenticateUser, authController.getCurrentUser);
 router.get('/me', authenticateUser, authController.getCurrentUser);
 router.get('/trial-status', authenticateUser, authController.getTrialStatus);
 router.post('/forgot-password', authController.forgotPassword);

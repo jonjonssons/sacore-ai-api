@@ -46,6 +46,45 @@ const contactOutService = require('../services/contactOutService');
 //     return res.status(500).json({ error: 'Internal server error processing callback' });
 //   }
 // });
+
+// Optimized IcyPeas rate limiter - fast but respects limits
+class IcypeasRateLimit {
+  constructor() {
+    this.requestQueue = [];
+    this.processing = false;
+    this.requestsPerMinute = 12; // Slightly under IcyPeas limit for safety
+    this.requestInterval = Math.ceil(60000 / this.requestsPerMinute); // ~5 seconds between requests
+  }
+
+  async waitForSlot() {
+    return new Promise((resolve) => {
+      this.requestQueue.push(resolve);
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.processing || this.requestQueue.length === 0) return;
+
+    this.processing = true;
+
+    while (this.requestQueue.length > 0) {
+      const resolve = this.requestQueue.shift();
+      resolve(); // Allow this request to proceed
+
+      // Wait before processing next request (only if there are more in queue)
+      if (this.requestQueue.length > 0) {
+        console.log(`⏳ IcyPeas rate limit: waiting ${this.requestInterval / 1000}s before next request (${this.requestQueue.length} remaining)`);
+        await new Promise(r => setTimeout(r, this.requestInterval));
+      }
+    }
+
+    this.processing = false;
+  }
+}
+
+const icypeasRateLimit = new IcypeasRateLimit();
+// 🌟 SignalHire Callback Handler
 router.post('/signalhire', async (req, res) => {
   console.log('📬 SignalHire callback received!');
   console.log('Raw callback body:', JSON.stringify(req.body, null, 2));
@@ -174,6 +213,10 @@ router.post('/signalhire', async (req, res) => {
 
               if (firstname && lastname && domainOrCompany) {
                 console.log(`🔄 Attempting Icypeas fallback for ${item} (${firstname} ${lastname} at ${domainOrCompany})`);
+
+                // Wait for rate limit clearance
+                await icypeasRateLimit.waitForSlot();
+
 
                 const icypeasService = require('../services/icypeasService');
                 const icypeasResult = await icypeasService.enrichProfileWithEmail(

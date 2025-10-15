@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const timezones = require('../config/timezones');
 
 const UserSchema = new mongoose.Schema({
   email: {
@@ -100,6 +101,140 @@ const UserSchema = new mongoose.Schema({
   hasUsedMonthlyRollover: {
     type: Boolean,
     default: false,
+  },
+
+  // LinkedIn profile cache (replaces LinkedInSession for extension-based system)
+  linkedinProfile: {
+    profileUrn: {
+      type: String,
+      default: null,
+      index: true
+    },
+    profileUrl: {
+      type: String,
+      default: null
+    },
+    profileName: {
+      type: String,
+      default: null
+    },
+    linkedinSessionFingerprint: {
+      type: String,
+      default: null
+    },
+    urnLastUpdated: {
+      type: Date,
+      default: null
+    },
+    urnSource: {
+      type: String,
+      enum: ['api_fetched', 'extension_provided', 'manual', 'cache_expired', 'fetch_failed'],
+      default: null
+    }
+  },
+
+  // LinkedIn extension health monitoring
+  linkedInExtensionStatus: {
+    isActive: {
+      type: Boolean,
+      default: false
+    },
+    lastSeen: {
+      type: Date,
+      default: null
+    },
+    lastConnectedAt: {
+      type: Date,
+      default: null
+    },
+    lastDisconnectedAt: {
+      type: Date,
+      default: null
+    }
+  },
+
+  // LinkedIn global rate limit settings (applies to all user's campaigns)
+  linkedinRateLimits: {
+    invitations: {
+      hourly: {
+        type: Number,
+        default: 10,
+        min: 5,
+        max: 15
+      },
+      daily: {
+        type: Number,
+        default: 20,
+        min: 10,
+        max: 20
+      },
+      weekly: {
+        type: Number,
+        default: 80,
+        min: 50,
+        max: 80
+      }
+    },
+    messages: {
+      hourly: {
+        type: Number,
+        default: 20,
+        min: 10,
+        max: 30
+      },
+      daily: {
+        type: Number,
+        default: 50,
+        min: 30,
+        max: 80
+      },
+      weekly: {
+        type: Number,
+        default: 200,
+        min: 100,
+        max: 300
+      }
+    },
+    visits: {
+      hourly: {
+        type: Number,
+        default: 30,
+        min: 20,
+        max: 50
+      },
+      daily: {
+        type: Number,
+        default: 100,
+        min: 50,
+        max: 150
+      },
+      weekly: {
+        type: Number,
+        default: 400,
+        min: 200,
+        max: 500
+      }
+    },
+    checks: {
+      hourly: {
+        type: Number,
+        default: 50,
+        min: 30,
+        max: 100
+      },
+      daily: {
+        type: Number,
+        default: 200,
+        min: 100,
+        max: 300
+      },
+      weekly: {
+        type: Number,
+        default: 800,
+        min: 500,
+        max: 1000
+      }
+    }
   }
 });
 

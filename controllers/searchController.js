@@ -17,6 +17,7 @@ const xlsx = require('xlsx');
 const { Readable } = require('stream');
 const path = require('path');
 const fs = require('fs');
+const { saveSearchResults } = require('../utils/simpleProfileSaver');
 
 // Helper functions for searchLinkedInProfiles with Gemini primary + OpenAI fallback
 
@@ -166,6 +167,8 @@ exports.searchLinkedInProfiles = async (req, res) => {
   console.log('📝 DEBUG - req.body.filters type:', typeof req.body.filters);
   console.log('📝 DEBUG - req.body.filters value:', req.body.filters);
   console.log('📝 DEBUG - req.file:', req.file ? 'File present' : 'No file');
+
+  req.searchStartTime = Date.now();
 
   let filters = [];
 
@@ -403,7 +406,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
     const location = locations[0]; // Use the first location only
 
     // Generate industry variations for both Google and Brave with different prompts
-    console.log(`Generating industry variations for ${industries.length} industries using OpenAI...`);
+    console.log(`Generating industry variations for ${industries.length} industries using Gemini (with OpenAI fallback)...`);
 
     let googleIndustryVariations = [];
     let braveIndustryVariations = [];
@@ -1288,7 +1291,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
     let processedGoogleResults = [];
     if (googleResultsOnly.length > 0) {
       const batchSize = 60;
-      const concurrencyLimit = 12;
+      const concurrencyLimit = 15;
 
       const batches = [];
       for (let i = 0; i < googleResultsOnly.length; i += batchSize) {
@@ -1389,7 +1392,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
     let processedBraveResults = [];
     if (braveResultsOnly.length > 0) {
       const batchSize = 60;
-      const concurrencyLimit = 12;
+      const concurrencyLimit = 15;
 
       const batches = [];
       for (let i = 0; i < braveResultsOnly.length; i += batchSize) {
@@ -1903,6 +1906,7 @@ exports.searchLinkedInProfiles = async (req, res) => {
       result.source === 'contactout' ||
       (result.link && result.link.trim() !== "")
     );
+
     // Dynamic credit calculation based on actual results count
     if (finalResults.length > 0 && (includeGoogle || includeBrave)) {
       // Calculate credits based on result count using the tier system
@@ -1974,9 +1978,44 @@ exports.searchLinkedInProfiles = async (req, res) => {
 
     console.log(`Final results: ${finalResults.length}/${filteredResults.length} results after removing empty LinkedIn URLs`);
 
+    // Simple profile saving - much cleaner and faster!
+    const searchDuration = Date.now() - (req.searchStartTime || Date.now());
+    const saveResults = await saveSearchResults({
+      userId: req.user.userId,
+      filters: filters,
+      sourceInclusions: {
+        includeSignalHire,
+        includeBrave,
+        includeGoogle,
+        includeContactOut,
+        includeIcypeas,
+        includeCsvImport,
+        specificRequirements: req.body.specificRequirements || []
+      },
+      finalResults: finalResults,
+      meta: {
+        totalResults: finalResults.length,
+        totalResultsBeforeFilter: resultsWithFractionalScores.length,
+        resultsAfterRelevanceFilter: filteredResults.length,
+        totalFetched: allResults.length,
+        uniqueResults: uniqueResults.length,
+        googleResults: googleResults.length,
+        braveResults: braveResults.length,
+        signalHireResults: signalHireResults.length,
+        icypeasResults: icypeasResults.length,
+        contactOutResults: contactOutResults.length,
+        csvImportResults: csvResults.length,
+        csvResultsInFinal: finalResults.filter(r => r.source === 'csv_import').length,
+        csvImportMeta: csvMeta
+      },
+      duration: searchDuration,
+      creditsUsed: totalCredits
+    });
+
     res.status(StatusCodes.OK).json({
       results: finalResults,
       usage: await usageService.getSearchUsage(req.user.userId),
+      searchId: saveResults.searchId,
       meta: {
         totalResults: finalResults.length,
         totalResultsBeforeFilter: resultsWithFractionalScores.length,
@@ -2003,7 +2042,10 @@ exports.searchLinkedInProfiles = async (req, res) => {
         // Credit information
         creditsCharged: totalCredits,
         creditTier: getCreditTierDescription(finalResults.length),
-        pricingModel: 'pay-per-results'
+        pricingModel: 'pay-per-results',
+        // Search saving information
+        searchSaved: saveResults.success,
+        profilesSaved: saveResults.savedProfiles
       }
     });
   } catch (error) {
@@ -2336,9 +2378,14 @@ async function parseExcelBuffer(buffer) {
 }
 
 async function parseCsvString(csvString) {
+  // Convert literal \n to actual newlines
+  const normalizedCsv = csvString.replace(/\\n/g, '\n');
+  console.log('Parsing CSV string:', normalizedCsv);
+  console.log('Number of lines:', normalizedCsv.split('\n').length);
+
   return new Promise((resolve, reject) => {
     const results = [];
-    const stream = Readable.from(csvString);
+    const stream = Readable.from(normalizedCsv);
 
     stream
       .pipe(csv())
@@ -4237,6 +4284,8 @@ exports.filterProfilesFromCsvGemini = async (req, res) => {
 
 // Process CSV/XLSX file and return formatted profiles without filters using Gemini AI
 exports.processCsvProfiles = async (req, res) => {
+  // Track search start time for duration calculation
+  req.searchStartTime = Date.now();
   try {
     let csvData = [];
     let sourceMeta = {};

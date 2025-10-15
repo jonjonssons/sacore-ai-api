@@ -453,8 +453,7 @@ ${profilesContent}`;
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
+        model: 'gpt-5-mini',
         messages: [
           {
             role: 'system',
@@ -607,28 +606,94 @@ ${profilesContent}`;
     return extractedBatch.profiles || [];
 
   } catch (error) {
-    console.error('Error extracting batch profile data:', error);
+    console.error('❌ Error extracting batch profile data:', error.message);
 
-    // Handle OpenAI API errors
+    // Handle OpenAI API errors with detailed logging
     if (error.response) {
       const status = error.response.status;
-      let message = 'Unknown OpenAI API error';
+      const headers = error.response.headers;
+      const errorData = error.response.data;
 
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error('🚨 OpenAI API Error Details:');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error(`📍 Status Code: ${status}`);
+      console.error(`📅 Timestamp: ${new Date().toISOString()}`);
+
+      if (status === 401) {
+        console.error('🔐 Error Type: Invalid or expired OpenAI API key');
+      } else if (status === 429) {
+        console.error('⏱️  Error Type: Rate limit exceeded');
+
+        // Log rate limit headers if available
+        if (headers['x-ratelimit-limit-requests']) {
+          console.error(`📊 Rate Limit: ${headers['x-ratelimit-limit-requests']} requests`);
+        }
+        if (headers['x-ratelimit-remaining-requests']) {
+          console.error(`📉 Remaining: ${headers['x-ratelimit-remaining-requests']} requests`);
+        }
+        if (headers['x-ratelimit-reset-requests']) {
+          console.error(`🔄 Reset Time: ${headers['x-ratelimit-reset-requests']}`);
+        }
+        if (headers['retry-after']) {
+          console.error(`⏳ Retry After: ${headers['retry-after']} seconds`);
+        }
+      } else if (status === 400) {
+        console.error('❗ Error Type: Bad request to OpenAI API');
+      } else if (status >= 500) {
+        console.error('🔥 Error Type: OpenAI server error');
+      } else {
+        console.error(`⚠️  Error Type: Unknown (${status})`);
+      }
+
+      // Log error message from response
+      if (errorData?.error?.message) {
+        console.error(`💬 Error Message: ${errorData.error.message}`);
+      }
+      if (errorData?.error?.type) {
+        console.error(`🏷️  Error Type: ${errorData.error.type}`);
+      }
+      if (errorData?.error?.code) {
+        console.error(`🔢 Error Code: ${errorData.error.code}`);
+      }
+
+      // Log request details for debugging
+      console.error(`📦 Request Details:`);
+      console.error(`   - Profiles in batch: ${profiles.length}`);
+      console.error(`   - Model: gpt-5-mini`);
+      console.error(`   - API Endpoint: https://api.openai.com/v1/chat/completions`);
+
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      // Construct user-friendly message
+      let message = 'Unknown OpenAI API error';
       if (status === 401) {
         message = 'Invalid or expired OpenAI API key';
       } else if (status === 429) {
         message = 'OpenAI rate limit exceeded';
       } else if (status === 400) {
         message = 'Bad request to OpenAI API';
-      } else if (error.response.data && error.response.data.error) {
-        message = `OpenAI API error: ${error.response.data.error.message || error.response.data.error}`;
+      } else if (errorData?.error?.message) {
+        message = `OpenAI API error: ${errorData.error.message}`;
       }
 
       console.error(`OpenAI API error (${status}): ${message}`);
+      throw new Error(message);
     }
 
-    // Return empty array on error
-    return [];
+    // Log non-API errors (network issues, timeouts, etc.)
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('🚨 Network/Connection Error:');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error(`💬 Error Message: ${error.message}`);
+    console.error(`🔍 Error Code: ${error.code || 'N/A'}`);
+    if (error.config) {
+      console.error(`📍 Request URL: ${error.config.url}`);
+      console.error(`📝 Request Method: ${error.config.method?.toUpperCase()}`);
+    }
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    throw error;
   }
 };
 
@@ -1119,10 +1184,8 @@ Please analyze each profile against ALL criteria with detailed evidence and reas
     const response = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        // model: 'gpt-4o-mini',
-        // temperature: 0.3, // Increased for more thorough analysis
-        // max_tokens: 4000, // Increased for detailed responses
         model: 'gpt-5-mini',
+        // temperature: 0.3, // Increased for more thorough analysis
         max_completion_tokens: 16000, // Increased for detailed responses
         messages: [
           {
@@ -1214,6 +1277,7 @@ Please analyze each profile against ALL criteria with detailed evidence and reas
       }
 
       console.error(`OpenAI API error (${status}): ${message}`);
+      console.error('Error response:', error.response?.data);
     }
 
     throw error;

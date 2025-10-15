@@ -7,6 +7,8 @@ const ProfilesSchema = new mongoose.Schema({
     company: { type: String },
     location: { type: String },
     linkedinUrl: { type: String },
+    uid: { type: String },
+    signalhireData: { type: mongoose.Schema.Types.Mixed },
     email: { type: String },
     relevanceScore: { type: String },
     analysis: { type: mongoose.Schema.Types.Mixed },

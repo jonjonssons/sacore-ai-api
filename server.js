@@ -107,6 +107,8 @@ const authRoutes = require('./routes/authRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const stripeRoutes = require('./routes/stripeRoutes');
 const linkedinRoutes = require('./routes/linkedinRoutes');
+const linkedinQueueRoutes = require('./routes/linkedinQueueRoutes');
+const linkedinInstructionRoutes = require('./routes/linkedinInstructionRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const proxyRoutes = require('./routes/proxyRoutes');
 const callbackRoutes = require('./routes/callbackRoutes');
@@ -116,7 +118,13 @@ const savedProfileRoutes = require('./routes/savedProfileRoutes');
 const projectsRoutes = require('./routes/projectsRoutes');
 const profilesRoutes = require('./routes/profilesRoutes');
 const searchHistoryRoutes = require('./routes/searchHistoryRoutes');
+const searchResultsRoutes = require('./routes/searchResultsRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
+const campaignRoutes = require('./routes/campaignRoutes');
+const accountRoutes = require('./routes/accountRoutes');
+const taskRoutes = require('./routes/taskRoutes');
+const webhookRoutes = require('./routes/webhookRoutes');
+const globalSettingsRoutes = require('./routes/globalSettingsRoutes');
 
 // Import middleware
 const notFoundMiddleware = require('./middleware/not-found');
@@ -136,9 +144,79 @@ connectDB();
 startScheduler();
 
 // Middleware
+// app.use(cors({
+//   origin: function (origin, callback) {
+//     // Allow requests with no origin (like mobile apps or curl requests)
+//     if (!origin) return callback(null, true);
+
+//     // Allow chrome-extension origins
+//     if (origin.startsWith('chrome-extension://')) {
+//       return callback(null, true);
+//     }
+
+//     // Allow specific origins
+//     const allowedOrigins = [
+//       'http://localhost:3000', 
+//       'https://devsacoreweb.56-north.com', 
+//       'https://devsacoreweb.56-north.com/', 
+//       'http://localhost:8080', 
+//       'http://192.168.29.100:8080', 
+//       'http://172.29.96.1:8080', 
+//       'http://localhost:5173', 
+//       'http://localhost:3001', 
+//       'http://localhost:3002', 
+//       'http://localhost:3003'
+//     ];
+
+//     if (allowedOrigins.includes(origin)) {
+//       return callback(null, true);
+//     }
+
+//     return callback(new Error('Not allowed by CORS'));
+//   },
+//   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+//   credentials: true,
+//   preflightContinue: false,
+//   optionsSuccessStatus: 200
+// }));
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://devsacoreweb.56-north.com',
+  'http://localhost:8080',
+  'http://localhost:8081',
+  'http://192.168.29.100:8080',
+  'http://172.29.96.1:8080',
+  'http://localhost:3001',
+  'http://localhost:3002',
+  'http://localhost:3003',
+  'https://devsacoreweb.56-north.com/',
+  'https://sacore.ai/',
+  'https://sacore.ai',
+  'http://localhost:5173',
+  'https://sacore-ai-web-ickr.onrender.com/',
+  'https://sacore-ai-web-ickr.onrender.com'
+];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://devsacoreweb.56-north.com', 'https://devsacoreweb.56-north.com/', 'http://localhost:8080', 'http://192.168.29.100:8080', 'https://sacore.ai/', 'https://sacore.ai', 'http://localhost:5173', 'https://sacore-ai-web-ickr.onrender.com/', 'https://sacore-ai-web-ickr.onrender.com'],
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  origin: function (origin, callback) {
+    // ✅ Allow requests with no origin (like curl, mobile apps)
+    if (!origin) return callback(null, true);
+
+    // ✅ Allow Chrome extensions
+    if (origin.startsWith('chrome-extension://')) {
+      return callback(null, true);
+    }
+
+    // ✅ Allow whitelisted origins
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // ❌ Otherwise reject
+    return callback(new Error('Not allowed by CORS'));
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true
 }));
 
@@ -183,6 +261,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api/linkedin', linkedinRoutes);
+app.use('/api/linkedin-queue', linkedinQueueRoutes);
+app.use('/api/linkedin-instructions', linkedinInstructionRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/proxy', proxyRoutes);
 app.use('/api/callback', callbackRoutes);
@@ -191,7 +271,43 @@ app.use('/api/saved-profiles', savedProfileRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/profiles', profilesRoutes);
 app.use('/api/search-history', searchHistoryRoutes);
+app.use('/api/search-results', searchResultsRoutes);
 app.use('/api', dashboardRoutes);
+app.use('/api/campaigns', campaignRoutes);
+app.use('/api/accounts', accountRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/webhooks', webhookRoutes);
+app.use('/api/settings', globalSettingsRoutes);
+
+// Tracking pixel for email opens
+app.get('/t/o/:token.gif', async (req, res) => {
+  try {
+    const EmailLog = require('./models/EmailLog');
+    const Campaign = require('./models/Campaign');
+
+    const result = await EmailLog.findOneAndUpdate(
+      { openToken: req.params.token },
+      { $inc: { openCount: 1 }, $set: { lastOpenedAt: new Date() } },
+      { new: true }
+    );
+
+    console.log('EmailLog result:', result);
+
+    // Also update campaign openRate stats
+    if (result && result.campaignId) {
+      await Campaign.findByIdAndUpdate(result.campaignId, {
+        $inc: { 'stats.openRate': 1 }
+      });
+      console.log('✅ Campaign openRate incremented for campaign:', result.campaignId);
+    }
+
+    res.set('Content-Type', 'image/gif');
+    // 1x1 transparent GIF
+    res.send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64'));
+  } catch (e) {
+    // swallow errors
+  }
+});
 
 // Register a new SignalHire API request
 app.post('/api/signalhire-request', async (req, res) => {

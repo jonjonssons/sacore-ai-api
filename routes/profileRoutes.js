@@ -67,7 +67,6 @@ const analyzeProfilesWithFallback = async (profiles, criteria) => {
   }
 };
 
-
 // Get profile by LinkedIn URL
 router.get('/profile/:encodedLinkedInUrl', async (req, res) => {
   try {
@@ -1446,8 +1445,8 @@ router.post(
 
       // Process each profile as it becomes available
       const processProfileStream = async () => {
-        const maxWaitTime = 120000; // 2 minutes total wait time
-        const pollInterval = 3000; // Check every 3 seconds
+        const maxWaitTime = 60000; // 1 minute total wait time
+        const pollInterval = 2000; // Check every 2 seconds
         const startTime = Date.now();
 
         while (completedCount < totalCount && (Date.now() - startTime) < maxWaitTime) {
@@ -2796,8 +2795,8 @@ router.post(
         // STEP 2: Poll for ALL profiles globally (much more efficient)
         console.log(`⏱️ Polling for results from ${idsToEnrich.length} profiles...`);
 
-        const maxWaitTime = 180000; // 3 minutes total
-        const pollInterval = 3000; // 3 seconds
+        const maxWaitTime = 60000; // 1 minute total (optimized)
+        const pollInterval = 2000; // 2 seconds (faster polling)
         const startTime = Date.now();
 
         while (completedCount < profileIds.length && (Date.now() - startTime < maxWaitTime)) {
@@ -2856,12 +2855,64 @@ router.post(
 
           // Continue polling if not all profiles are done
           if (completedCount < profileIds.length) {
+            const remainingCount = profileIds.length - completedCount;
+            const waitTimeElapsed = Math.floor((Date.now() - startTime) / 1000);
+
+            // Send progress update every 10 seconds to avoid spam
+            if (waitTimeElapsed % 10 === 0 || waitTimeElapsed < 10) {
+              res.write(`data: ${JSON.stringify({
+                type: 'waiting_status',
+                message: `Waiting for ${remainingCount} more profile${remainingCount > 1 ? 's' : ''}... (${waitTimeElapsed}s)`,
+                completed: completedCount,
+                total: profileIds.length,
+                waitTimeElapsed
+              })}\n\n`);
+
+              if (res.flush) res.flush();
+            }
+
             await new Promise(resolve => setTimeout(resolve, pollInterval));
           }
         }
 
+        // ✅ EARLY RETRY: Trigger retry after 30 seconds for stuck profiles
+        const earlyRetryThreshold = 30000; // 30 seconds
+        if (completedCount < profileIds.length && (Date.now() - startTime) > earlyRetryThreshold) {
+          const potentiallyStuckProfiles = await ProfileRequest.find({
+            profileId: { $in: idsToEnrich },
+            status: { $in: ['pending', 'in_progress'] },
+            createdAt: { $lt: new Date(Date.now() - earlyRetryThreshold) }
+          });
+
+          if (potentiallyStuckProfiles.length > 0) {
+            console.log(`🔄 Early retry: ${potentiallyStuckProfiles.length} profiles stuck for >30s`);
+
+            res.write(`data: ${JSON.stringify({
+              type: 'early_retry_status',
+              message: `Retrying ${potentiallyStuckProfiles.length} slow profile(s)...`
+            })}\n\n`);
+
+            // Quick retry without 30s wait
+            const callbackUrl = `${process.env.API_BASE_URL}/api/callback/signalhire`;
+            try {
+              await signalHireService.searchProfiles(
+                potentiallyStuckProfiles.map(p => p.profileId),
+                callbackUrl,
+                {},
+                false
+              );
+              console.log(`📤 Early retry sent for ${potentiallyStuckProfiles.length} profiles`);
+
+              // Give webhooks 10 seconds to arrive (not 30)
+              await new Promise(resolve => setTimeout(resolve, 10000));
+            } catch (error) {
+              console.error('❌ Early retry failed:', error.message);
+            }
+          }
+        }
+
         // ✅ STEP 3: HANDLE PROFILES STUCK IN "PENDING" OR "IN_PROGRESS" STATUS
-        if (idsToEnrich.length > 0) {
+        if (idsToEnrich.length > 0 && completedCount < profileIds.length) {
           const stuckProfiles = await ProfileRequest.find({
             profileId: { $in: idsToEnrich },
             status: { $in: ['pending', 'in_progress'] }
@@ -3065,7 +3116,7 @@ router.post(
       }
 
       // ✅ STEP 3: HANDLE PROFILES STUCK IN "PENDING" OR "IN_PROGRESS" STATUS
-      if (idsToEnrich.length > 0) {
+      if (idsToEnrich.length > 0 && completedCount < profileIds.length) {
         const callbackUrl = `${process.env.API_BASE_URL}/api/callback/signalhire`;
         const stuckProfiles = await ProfileRequest.find({
           profileId: { $in: idsToEnrich },
