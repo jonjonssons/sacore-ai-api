@@ -6,23 +6,47 @@ const jobCreationMutex = new Map();
 
 const { sendLinkedInMessage, getTargetProfileUrn } = require('./linkedinService');
 
-// Create Redis client for rate limiting
-const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-    retryDelayOnFailover: 100,
-    enableReadyCheck: false,
-    maxRetriesPerRequest: null,
-});
-
-// Create LinkedIn message queue
-const linkedinMessageQueue = new Bull('linkedin messages', {
-    redis: {
+// Create Redis client for rate limiting with TLS support for Upstash
+const redis = process.env.REDIS_URL
+    ? new Redis(process.env.REDIS_URL, {
+        tls: {
+            rejectUnauthorized: false  // Required for Upstash
+        },
+        retryDelayOnFailover: 100,
+        enableReadyCheck: false,
+        maxRetriesPerRequest: null,
+    })
+    : new Redis({
         host: process.env.REDIS_HOST || 'localhost',
         port: process.env.REDIS_PORT || 6379,
         password: process.env.REDIS_PASSWORD || undefined,
-    },
+        tls: process.env.REDIS_TLS === 'true' ? { rejectUnauthorized: false } : undefined,
+        retryDelayOnFailover: 100,
+        enableReadyCheck: false,
+        maxRetriesPerRequest: null,
+    });
+
+// Handle connection events
+redis.on('error', (err) => {
+    console.error('❌ [Message Queue] Redis connection error:', err.message);
+});
+
+redis.on('connect', () => {
+    console.log('✅ [Message Queue] Redis connected successfully');
+});
+
+// Create LinkedIn message queue with TLS support
+const redisConfig = process.env.REDIS_URL
+    ? process.env.REDIS_URL
+    : {
+        host: process.env.REDIS_HOST || 'localhost',
+        port: process.env.REDIS_PORT || 6379,
+        password: process.env.REDIS_PASSWORD || undefined,
+        tls: process.env.REDIS_TLS === 'true' ? { rejectUnauthorized: false } : undefined,
+    };
+
+const linkedinMessageQueue = new Bull('linkedin messages', {
+    redis: redisConfig,
     defaultJobOptions: {
         removeOnComplete: 100, // Keep last 100 completed jobs
         removeOnFail: 50,      // Keep last 50 failed jobs

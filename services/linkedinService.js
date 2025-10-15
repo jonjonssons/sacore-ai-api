@@ -602,14 +602,24 @@ const CONNECTION_CHECK_DELAY = {
 // Add connection check rate limiting to prevent LinkedIn 410 errors
 async function addConnectionCheckDelay(userId) {
   const Redis = require('ioredis');
-  const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-    retryDelayOnFailover: 100,
-    enableReadyCheck: false,
-    maxRetriesPerRequest: null,
-  });
+  const redis = process.env.REDIS_URL
+    ? new Redis(process.env.REDIS_URL, {
+      tls: {
+        rejectUnauthorized: false  // Required for Upstash
+      },
+      retryDelayOnFailover: 100,
+      enableReadyCheck: false,
+      maxRetriesPerRequest: null,
+    })
+    : new Redis({
+      host: process.env.REDIS_HOST || 'localhost',
+      port: process.env.REDIS_PORT || 6379,
+      password: process.env.REDIS_PASSWORD || undefined,
+      tls: process.env.REDIS_TLS === 'true' ? { rejectUnauthorized: false } : undefined,
+      retryDelayOnFailover: 100,
+      enableReadyCheck: false,
+      maxRetriesPerRequest: null,
+    });
 
   const connectionDelayKey = `connection_check_delay:${userId}`;
   const lastConnectionCheck = await redis.get(connectionDelayKey);

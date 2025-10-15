@@ -1,14 +1,33 @@
 const Redis = require('ioredis');
 const LinkedInInstruction = require('../models/LinkedInInstruction');
 
-// Create Redis client for rate limiting (reuse existing configuration)
-const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    password: process.env.REDIS_PASSWORD || undefined,
-    retryDelayOnFailover: 100,
-    enableReadyCheck: false,
-    maxRetriesPerRequest: null,
+// Create Redis client for rate limiting with TLS support for Upstash
+const redis = process.env.REDIS_URL
+    ? new Redis(process.env.REDIS_URL, {
+        tls: {
+            rejectUnauthorized: false  // Required for Upstash
+        },
+        retryDelayOnFailover: 100,
+        enableReadyCheck: false,
+        maxRetriesPerRequest: null,
+    })
+    : new Redis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: process.env.REDIS_PORT || 6379,
+        password: process.env.REDIS_PASSWORD || undefined,
+        tls: process.env.REDIS_TLS === 'true' ? { rejectUnauthorized: false } : undefined,
+        retryDelayOnFailover: 100,
+        enableReadyCheck: false,
+        maxRetriesPerRequest: null,
+    });
+
+// Handle connection events
+redis.on('error', (err) => {
+    console.error('❌ [Rate Limit] Redis connection error:', err.message);
+});
+
+redis.on('connect', () => {
+    console.log('✅ [Rate Limit] Redis connected successfully');
 });
 
 // Rate limiting constants (conservative defaults - fallback if User model not set)

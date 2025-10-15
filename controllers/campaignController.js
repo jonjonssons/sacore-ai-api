@@ -2699,12 +2699,19 @@ exports.deleteAllCampaignsGlobal = async (req, res) => {
             // 7. Clear any Redis cache related to campaigns (optional)
             console.log('🧹 Clearing campaign-related cache...');
             try {
-                const redis = require('ioredis');
-                const redisClient = new redis({
-                    host: process.env.REDIS_HOST || 'localhost',
-                    port: process.env.REDIS_PORT || 6379,
-                    password: process.env.REDIS_PASSWORD || undefined,
-                });
+                const Redis = require('ioredis');
+                const redisClient = process.env.REDIS_URL
+                    ? new Redis(process.env.REDIS_URL, {
+                        tls: {
+                            rejectUnauthorized: false  // Required for Upstash
+                        }
+                    })
+                    : new Redis({
+                        host: process.env.REDIS_HOST || 'localhost',
+                        port: process.env.REDIS_PORT || 6379,
+                        password: process.env.REDIS_PASSWORD || undefined,
+                        tls: process.env.REDIS_TLS === 'true' ? { rejectUnauthorized: false } : undefined,
+                    });
 
                 // Clear campaign-related cache keys
                 const cacheKeys = await redisClient.keys('campaign:*');
