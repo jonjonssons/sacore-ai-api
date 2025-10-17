@@ -67,6 +67,16 @@ exports.createProfile = async (req, res) => {
         });
 
     } catch (error) {
+        // Handle MongoDB duplicate key error (code 11000)
+        if (error.code === 11000) {
+            console.log('⚠️ Duplicate profile detected:', error.keyValue);
+            return res.status(200).json({
+                message: 'One or more profiles already exist in this project',
+                error: 'Duplicate profile detected',
+                duplicate: error.keyValue
+            });
+        }
+
         console.error('Error in createProfile:', error);
         res.status(500).json({ error: error.message });
     }

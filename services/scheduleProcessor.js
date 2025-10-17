@@ -106,16 +106,16 @@ const dailyYearlyCreditCheck = async () => {
 // Start the scheduler
 const startScheduler = () => {
     // Process scheduled actions every minute
-    // setInterval(processScheduledActions, 60000);
+    setInterval(processScheduledActions, 60000);
 
     // Check for email replies every 5 minutes
-    // setInterval(checkEmailReplies, 5 * 60 * 1000);
+    setInterval(checkEmailReplies, 5 * 60 * 1000);
 
     // Check for LinkedIn replies every 30 minutes
-    // setInterval(checkLinkedInReplies, 30 * 60 * 1000);
+    setInterval(checkLinkedInReplies, 30 * 60 * 1000);
 
     // Check extension health every 30 minutes
-    // setInterval(checkExtensionHealth, 30 * 60 * 1000);
+    setInterval(checkExtensionHealth, 30 * 60 * 1000);
 
     // Check yearly user credits daily at 3 AM
     setInterval(() => {

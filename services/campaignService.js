@@ -707,10 +707,27 @@ exports.processEmailStep = async (node, prospect, campaign) => {
         console.log('📧 Thread Info:', threadInfo);
         console.log('📧 Message:', emailContent);
 
-        // Create email headers with proper Message-ID format
+        // Helper function to encode email headers with non-ASCII characters (RFC 2047)
+        const encodeEmailHeader = (text) => {
+            if (!text || !/[^\x00-\x7F]/.test(text)) {
+                return text; // No non-ASCII chars, return as-is
+            }
+            // RFC 2047 MIME encoding using Base64
+            const encoded = Buffer.from(text, 'utf8').toString('base64');
+            return `=?UTF-8?B?${encoded}?=`;
+        };
+
+        // Create email headers with proper Message-ID format and MIME encoding for special characters
         const messageId = `${Date.now()}.${Math.random().toString(36).substr(2, 9)}@${emailAccount.email.split('@')[1]}`;
+
+        // Encode displayName for international characters (e.g., "Jönsson" won't become "JÃƒÂ¶nsson")
+        const encodedDisplayName = encodeEmailHeader(emailAccount.displayName);
+        const fromHeader = encodedDisplayName
+            ? `From: ${encodedDisplayName} <${emailAccount.email}>`
+            : `From: ${emailAccount.email}`;
+
         const emailHeaders = [
-            `From: ${emailAccount.displayName} <${emailAccount.email}>`,
+            fromHeader,
             `To: ${prospect.email}`,
             `Date: ${new Date().toUTCString()}`,
             `Message-ID: <${messageId}>`,
@@ -718,8 +735,10 @@ exports.processEmailStep = async (node, prospect, campaign) => {
         ];
 
         // Always include Subject if we have one (Gmail threads on recipient mailbox by subject)
+        // Encode subject for international characters
         if (finalSubject && finalSubject.trim().length > 0) {
-            emailHeaders.splice(2, 0, `Subject: ${finalSubject.trim()}`);
+            const encodedSubject = encodeEmailHeader(finalSubject.trim());
+            emailHeaders.splice(2, 0, `Subject: ${encodedSubject}`);
         }
 
         // Add threading headers for follow-ups - using ACTUAL Gmail Message-ID

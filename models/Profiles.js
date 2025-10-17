@@ -18,4 +18,7 @@ const ProfilesSchema = new mongoose.Schema({
     timestamps: true
 });
 
+// Compound unique index to prevent duplicate profiles in the same project
+ProfilesSchema.index({ projectId: 1, linkedinUrl: 1 }, { unique: true });
+
 module.exports = mongoose.model('Profiles', ProfilesSchema);
