@@ -212,6 +212,168 @@ exports.handleExtensionReconnect = async (userId) => {
             };
         }
 
+        // 🛡️ CRITICAL SAFETY CHECK - Count total paused executions
+        const totalPausedExecutions = await CampaignExecution.countDocuments({
+            campaignId: { $in: campaignsToResume.map(c => c._id) },
+            status: 'paused',
+            pauseReason: 'extension_offline'
+        });
+
+        console.log(`📊 [Extension Reconnect] Found ${totalPausedExecutions} paused executions across ${campaignsToResume.length} campaigns`);
+
+        // If more than 100, use safe staggered approach to prevent server crash
+        if (totalPausedExecutions > 100) {
+            console.log(`⚠️ [Extension Reconnect] Too many paused executions (${totalPausedExecutions}). Restoring gradually.`);
+
+            try {
+                // Mark campaigns as active
+                await Campaign.updateMany(
+                    {
+                        _id: { $in: campaignsToResume.map(c => c._id) }
+                    },
+                    {
+                        $set: {
+                            status: 'active',
+                            autoresumeWhenOnline: false,
+                            resumedAt: new Date()
+                        }
+                    }
+                );
+
+                // Get all paused executions
+                const pausedExecs = await CampaignExecution.find({
+                    campaignId: { $in: campaignsToResume.map(c => c._id) },
+                    status: 'paused',
+                    pauseReason: 'extension_offline'
+                });
+
+                console.log(`📊 [Extension Reconnect] Processing ${pausedExecs.length} paused executions...`);
+
+                const now = new Date();
+                let scheduledCount = 0;
+                let restoredCount = 0;
+                let skippedCount = 0;
+
+                for (let i = 0; i < pausedExecs.length; i++) {
+                    const exec = pausedExecs[i];
+
+                    try {
+                        // 🛡️ SAFETY CHECK: Verify execution has required data
+                        if (!exec.currentNodeId) {
+                            console.warn(`⚠️ [Reconnect] Execution ${exec._id} missing currentNodeId - marking as failed`);
+                            await CampaignExecution.updateOne(
+                                { _id: exec._id },
+                                {
+                                    $set: {
+                                        status: 'failed',
+                                        pauseReason: undefined,
+                                        lastActivity: new Date()
+                                    }
+                                }
+                            );
+                            skippedCount++;
+                            continue;
+                        }
+
+                        // Check if execution already has pending scheduled actions
+                        const hasPendingActions = exec.scheduledActions &&
+                            Array.isArray(exec.scheduledActions) &&
+                            exec.scheduledActions.some(
+                                action => !action.processed && action.scheduledFor > now
+                            );
+
+                        if (hasPendingActions) {
+                            // Already has future scheduled actions - just change status back to waiting
+                            console.log(`✅ [Reconnect] Execution ${exec._id} already has scheduled actions - restoring to waiting`);
+                            await CampaignExecution.updateOne(
+                                { _id: exec._id },
+                                {
+                                    $set: {
+                                        status: 'waiting',
+                                        pauseReason: undefined,
+                                        lastActivity: new Date()
+                                    }
+                                }
+                            );
+                            restoredCount++;
+                        } else if (exec.waitingFor && exec.waitingJobId) {
+                            // Was waiting for a LinkedIn action - restore but don't schedule
+                            console.log(`⏸️ [Reconnect] Execution ${exec._id} was waiting for ${exec.waitingFor} - restoring to waiting`);
+                            await CampaignExecution.updateOne(
+                                { _id: exec._id },
+                                {
+                                    $set: {
+                                        status: 'waiting',
+                                        pauseReason: undefined,
+                                        lastActivity: new Date()
+                                    }
+                                }
+                            );
+                            restoredCount++;
+                        } else {
+                            // No pending actions - create new staggered scheduled action
+                            const scheduledFor = new Date(now.getTime() + (scheduledCount * 10 * 1000)); // 10s apart
+
+                            console.log(`📅 [Reconnect] Scheduling execution ${exec._id} for ${scheduledFor.toISOString()}`);
+
+                            await CampaignExecution.updateOne(
+                                { _id: exec._id },
+                                {
+                                    $set: {
+                                        status: 'waiting',
+                                        pauseReason: undefined,
+                                        lastActivity: new Date()
+                                    },
+                                    $push: {
+                                        scheduledActions: {
+                                            nodeId: exec.currentNodeId,
+                                            scheduledFor: scheduledFor,
+                                            actionType: 'process_node',
+                                            processed: false
+                                        }
+                                    }
+                                }
+                            );
+
+                            scheduledCount++;
+                        }
+
+                    } catch (execError) {
+                        console.error(`❌ [Reconnect] Error processing execution ${exec._id}:`, execError);
+                        skippedCount++;
+                    }
+                }
+
+                console.log(`✅ [Extension Reconnect] Completed:`, {
+                    total: pausedExecs.length,
+                    newlyScheduled: scheduledCount,
+                    restored: restoredCount,
+                    skipped: skippedCount
+                });
+
+                return {
+                    success: true,
+                    wasOffline: true,
+                    campaignsResumed: campaignsToResume.length,
+                    executionsRestored: pausedExecs.length,
+                    executionsScheduled: scheduledCount,
+                    executionsSkipped: skippedCount,
+                    note: `${scheduledCount} executions scheduled over ${Math.ceil(scheduledCount * 10 / 60)} minutes, ${restoredCount} restored, ${skippedCount} skipped`
+                };
+
+            } catch (error) {
+                console.error(`❌ [Extension Reconnect] Critical error during bulk resume:`, error);
+                return {
+                    success: false,
+                    wasOffline: true,
+                    campaignsResumed: 0,
+                    error: error.message
+                };
+            }
+        }
+
+        console.log(`✅ [Extension Reconnect] Safe to auto-resume (${totalPausedExecutions} executions)`);
+
         console.log(`📊 [Extension Reconnect] Found ${campaignsToResume.length} campaigns to resume`);
 
         let campaignsResumed = 0;
